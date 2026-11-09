@@ -119,7 +119,8 @@ export function cashStatus(counts: CashCount[]): { status: CashStatus; countedCe
 }
 
 export function samePerson(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+  const norm = (x: string) => x.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return norm(a) === norm(b);
 }
 
 export function reconcile(input: ReconcileInput): ReconcileResult {

@@ -9,7 +9,7 @@ import { buttonClass, cx } from "./ui";
 
 interface MenuItem { sku: string; name: string; priceCents: number }
 interface Line { sku: string; name: string; quantity: number; unitCents: number }
-type Via = "paypal" | "venmo" | "offline";
+type Via = "paypal" | "venmo" | "card" | "offline";
 interface Paid { code: string; items: Line[]; totalCents: number; via: Via }
 interface Notice { tone: "warn" | "bad"; text: string }
 
@@ -20,7 +20,7 @@ type OnApproveActions = Parameters<NonNullable<PayPalButtonsComponentProps["onAp
 interface CreateResponse { id: string; code: string; totalCents: number; simulated: boolean }
 interface CaptureResponse { status: "COMPLETED" | "PENDING"; code: string; items: Line[]; totalCents: number }
 
-const VIA_LABEL: Record<Via, string> = { paypal: "PayPal", venmo: "Venmo", offline: "offline demo" };
+const VIA_LABEL: Record<Via, string> = { paypal: "PayPal", venmo: "Venmo", card: "card", offline: "offline demo" };
 
 function storageKey(nightId: string) {
   return `halftime:paid:${nightId}`;
@@ -161,7 +161,7 @@ export function BuyerMenu({
     async (data: CreateOrderData): Promise<string> => {
       setNotice(null);
       errorShown.current = false;
-      const via: Via = data.paymentSource === "venmo" ? "venmo" : "paypal";
+      const via: Via = data.paymentSource === "venmo" ? "venmo" : data.paymentSource === "card" ? "card" : "paypal";
       const created = await createOrder(via);
       if (created.simulated) {
         // The server has no PayPal credentials after all; switch to the offline button.
@@ -377,6 +377,8 @@ function PayPalArea({
       {disabled && !isPending && <p className="pb-1 text-center text-sm text-muted">Add an item to pay.</p>}
       <PayPalButtons {...shared} fundingSource="paypal" style={{ layout: "vertical", shape: "rect", label: "pay", height: 48 }} />
       <PayPalButtons {...shared} fundingSource="venmo" style={{ layout: "vertical", shape: "rect", height: 48 }} />
+      {/* Guest card checkout, for fans without a PayPal or Venmo account. */}
+      <PayPalButtons {...shared} fundingSource="card" style={{ layout: "vertical", shape: "rect", height: 48 }} />
     </div>
   );
 }
