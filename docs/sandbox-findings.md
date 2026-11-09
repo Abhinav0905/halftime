@@ -52,6 +52,19 @@ Payout timeline from `GET /v1/payments/payouts/KXUZXA8JJW8G8`: batch created 06:
 
 A guest card payment made through the PayPal buttons reports `payment_source.paypal`, so the app records its funding as `paypal`; the buyer screen labels it "card" from the button that was used.
 
+## Demo game recorded for the video (Nov 9 UTC)
+
+One full game run through the app against the sandbox, with guest card checkouts and PayPal's sandbox test card:
+
+| What | PayPal IDs | Result |
+|---|---|---|
+| Order D9J: 2 × water, 1 × hot dog, $5.00 | order `1TH69117KR429742R`, capture `6UH40869L0030684S` | COMPLETED; `custom_id night_Nh3y7evB:window` |
+| Order R6V: 1 × chips, 1 × candy bar, $2.50 | order `70X53409AD612351U` | COMPLETED |
+| Order P3H: the same $2.50 order again (double charge) | order `02E70284V3685283M`, refund `3UT639509A5381443` | refunded; capture status REFUNDED |
+| Supply reimbursement, $12.40 to the sandbox personal account | payout batch `PN5SJ9L6UJB5C`, `sender_batch_id reimb_BTj-oOZG` | batch SUCCESS, item SUCCESS |
+
+The close-out for that game came to $7.50 in PayPal sales and $5.50 in expected cash sales, plus the $20.00 float. Both cash counts were $25.50, a match. The deposit was recorded as $3.50, so an amber notice reported it as $2.00 short.
+
 ## Not yet checked
 
 - Live webhook delivery and signature verification, and the lag between capture and `PAYMENT.CAPTURE.COMPLETED`. This needs a public https URL: deploy, run `npm run webhook:register -- https://<host>` and set `PAYPAL_WEBHOOK_ID`.
