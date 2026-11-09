@@ -1,6 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { recountWarnings } from "@/components/count/CountEditor";
+import { GameDayLabel, TonightDate } from "@/components/GameDay";
 import { nextStep } from "@/components/nextStep";
-import { formatGameDate, fundingLabel, itemsSummary } from "@/components/format";
+import { formatGameDate, fundingLabel, itemsSummary, todayLocalIso } from "@/components/format";
 
 describe("nextStep", () => {
   const base = { id: "n1", cashStatus: "missing" as const, recount: false };
@@ -15,8 +19,20 @@ describe("nextStep", () => {
     expect(s.secondary?.href).toBe("/nights/n1/board");
   });
 
-  it("asks for a recount before anything else while closing", () => {
-    expect(nextStep({ ...base, status: "closing", cashStatus: "agree", recount: true }).text).toMatch(/recount/);
+  it("asks for the recount before the cash is counted", () => {
+    const s = nextStep({ ...base, status: "closing", recount: true });
+    expect(s.action).toEqual({ label: "Recount leftovers", href: "/nights/n1/count/close" });
+    expect(s.text).toMatch(/before anyone counts the cash/);
+    expect(s.secondary?.href).toBe("/nights/n1/close");
+  });
+
+  it("asks for a note instead of a recount once cash counting has started", () => {
+    for (const cashStatus of ["single", "disagree", "agree"] as const) {
+      const s = nextStep({ ...base, status: "closing", cashStatus, recount: true });
+      expect(s.action?.href).toBe("/nights/n1/close");
+      expect(s.text).toMatch(/add a note about them when you finalize/);
+    }
+    expect(nextStep({ ...base, status: "closing", cashStatus: "agree", recount: false }).text).not.toMatch(/note/);
   });
 
   it("walks the cash count states while closing", () => {
@@ -45,5 +61,33 @@ describe("format helpers", () => {
 
   it("summarises order lines", () => {
     expect(itemsSummary([{ name: "Hot dog", quantity: 2 }, { name: "Water", quantity: 1 }])).toBe("2 × Hot dog, 1 × Water");
+  });
+});
+
+describe("recountWarnings", () => {
+  const items = [{ sku: "hotdog", name: "Hot dog" }, { sku: "water", name: "Water" }];
+  // At most 14 hot dogs can be left; water had no PayPal sales, so it has no cap.
+  const caps = { hotdog: 14 };
+
+  it("says nothing while the counts are possible", () => {
+    expect(recountWarnings(items, { hotdog: 14, water: 40 }, null, caps)).toEqual({});
+  });
+
+  it("warns once a count is over the cap, minus waste", () => {
+    expect(recountWarnings(items, { hotdog: 15, water: 0 }, null, caps).hotdog).toBe("PayPal's sales show no more than 14 can be left. Please recount.");
+    expect(recountWarnings(items, { hotdog: 13, water: 0 }, { hotdog: 2, water: 0 }, caps).hotdog).toMatch(/no more than 12/);
+  });
+
+  it("points at the waste or the opening count when no leftover count could work", () => {
+    expect(recountWarnings(items, { hotdog: 0, water: 0 }, { hotdog: 15, water: 0 }, caps).hotdog).toMatch(/Check the waste entry/);
+    expect(recountWarnings(items, { hotdog: 0, water: 0 }, null, { hotdog: -1 }).hotdog).toMatch(/opening count may be off/);
+  });
+});
+
+describe("game day label", () => {
+  it("never says Tonight from the server, since only the browser knows the viewer's day", () => {
+    const today = todayLocalIso();
+    expect(renderToStaticMarkup(createElement(GameDayLabel, { date: today }))).toBe(`<span>${formatGameDate(today, { year: true })}</span>`);
+    expect(renderToStaticMarkup(createElement(TonightDate, { date: today }))).toBe("");
   });
 });

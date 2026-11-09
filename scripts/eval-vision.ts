@@ -1,9 +1,9 @@
 // Scores the photo count against hand-labelled photos.
 //
 //   npm run eval                          run the configured provider on eval/photos/*
-//   npm run eval -- --provider replay     score the recorded answers instead (no API key; what CI runs)
+//   npm run eval -- --provider replay     score the recorded answers instead (no API key needed)
 //   npm run eval -- --record              also save each answer to eval/recorded/<sha256>.json for replay mode
-//   npm run eval -- --model gemini-2.5-flash --only rows-shade-01.jpg
+//   npm run eval -- --model gemini-3.5-flash --only rows-shade-01.jpg
 //   npm run eval -- --photos ~/shots --labels ~/shots/labels.json --recorded /tmp/rec
 //
 // Labels live in eval/labels.json: { "<photo file>": { "<sku>": count } }.

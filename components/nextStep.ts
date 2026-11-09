@@ -29,32 +29,37 @@ export function nextStep(input: {
         action: { label: "Count leftovers", href: `${base}/count/close` },
         secondary: { label: "Window board", href: `${base}/board` },
       };
-    case "closing":
-      if (input.recount) {
+    case "closing": {
+      // Counting the cash locks the closing count, so a recount only helps before the first cash count.
+      if (input.recount && input.cashStatus === "missing") {
         return {
-          text: "Some items need a recount before the expected cash can be worked out.",
-          action: { label: "Review the close-out", href: `${base}/close` },
+          text: "Some items need a recount. Recount them before anyone counts the cash, because counting the cash locks the closing count.",
+          action: { label: "Recount leftovers", href: `${base}/count/close` },
+          secondary: { label: "Review the close-out", href: `${base}/close` },
         };
       }
+      const note = input.recount ? " Some items didn't add up, so add a note about them when you finalize." : "";
       if (input.cashStatus === "agree") {
         return {
-          text: "Both cash counts match. Review the result and finalize the night.",
+          text: `Both cash counts match. Review the result and finalize the night.${note}`,
           action: { label: "Finalize close-out", href: `${base}/close` },
         };
       }
       if (input.cashStatus === "disagree") {
         return {
-          text: "The two cash counts are different. Count the box again.",
+          text: `The two cash counts are different. Count the box again.${note}`,
           action: { label: "Recount the cash", href: `${base}/close` },
         };
       }
       return {
         text:
-          input.cashStatus === "single"
+          (input.cashStatus === "single"
             ? "One cash count is in. A second volunteer counts the box without seeing the first number."
-            : "Two volunteers count the cash box, one after the other, without seeing each other's number.",
+            : "Two volunteers who weren't on the closing count each count the cash box, without seeing each other's number.") +
+          note,
         action: { label: "Count the cash", href: `${base}/close` },
       };
+    }
     case "closed":
       return {
         text: "The close-out is finalized. Someone who did not count the cash takes it to the bank and records the deposit.",

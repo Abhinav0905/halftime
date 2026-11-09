@@ -75,9 +75,12 @@ function upload(nightId: string, purpose: Purpose, blob: Blob, onProgress: (p: n
       if (e.lengthComputable) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
+      // The response is null when it is not JSON, e.g. a proxy's error page.
       const body = xhr.response as { sha256?: string; url?: string; error?: string } | null;
       if (xhr.status === 201 && body?.sha256 && body.url) resolve({ sha256: body.sha256, url: body.url });
-      else reject(new Error(body?.error ?? `The upload failed (HTTP ${xhr.status}).`));
+      else if (typeof body?.error === "string") reject(new Error(body.error));
+      else if (xhr.status === 413) reject(new Error("The photo is too large to upload. Please take it again."));
+      else reject(new Error("The upload did not go through. Check the signal and try again."));
     };
     xhr.onerror = () => reject(new Error("The upload did not reach the server. Check the signal and try again."));
     xhr.ontimeout = () => reject(new Error("The upload took too long. Check the signal and try again."));
@@ -85,16 +88,30 @@ function upload(nightId: string, purpose: Purpose, blob: Blob, onProgress: (p: n
   });
 }
 
+async function fetchDemo(src: string): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(src);
+  } catch {
+    throw new Error("The demo photo could not be loaded. Check the connection and try again.");
+  }
+  if (!res.ok) throw new Error("The demo photo could not be loaded.");
+  return res.blob();
+}
+
 export function PhotoCapture({
   nightId,
   purpose,
   onUploaded,
   label = "Take photo",
+  demoSrc = null,
 }: {
   nightId: string;
   purpose: Purpose;
   onUploaded: (p: { sha256: string; url: string }) => void;
   label?: string;
+  /** A bundled sample photo to offer instead of the camera. */
+  demoSrc?: string | null;
 }) {
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -107,15 +124,10 @@ export function PhotoCapture({
     };
   }, [preview]);
 
-  async function onFile(file: File | undefined) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setState({ step: "error", message: "Please choose a photo." });
-      return;
-    }
+  async function send(getBlob: () => Promise<Blob>) {
     setState({ step: "preparing" });
     try {
-      const blob = await preparePhoto(file);
+      const blob = await getBlob();
       setPreview(URL.createObjectURL(blob));
       setState({ step: "uploading", progress: 0 });
       const saved = await upload(nightId, purpose, blob, (progress) => setState({ step: "uploading", progress }));
@@ -127,6 +139,15 @@ export function PhotoCapture({
       // Clear the input so choosing the same file again still fires onChange.
       if (inputRef.current) inputRef.current.value = "";
     }
+  }
+
+  function onFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setState({ step: "error", message: "Please choose a photo." });
+      return;
+    }
+    void send(() => preparePhoto(file));
   }
 
   const busy = state.step === "preparing" || state.step === "uploading";
@@ -163,6 +184,17 @@ export function PhotoCapture({
         {state.step === "uploading" && `Uploading… ${Math.round(state.progress * 100)}%`}
         {!busy && (preview ? "Retake photo" : label)}
       </label>
+
+      {demoSrc && !busy && (
+        <button
+          type="button"
+          // Sent exactly as stored, so its SHA-256 matches the recorded count used when there is no API key.
+          onClick={() => void send(() => fetchDemo(demoSrc))}
+          className="min-h-11 w-full text-center text-sm font-medium text-brand hover:underline"
+        >
+          Use the demo photo
+        </button>
+      )}
 
       <p role="status" aria-live="polite" className="sr-only">
         {state.step === "uploading" ? "Uploading photo" : state.step === "done" ? "Photo uploaded" : ""}

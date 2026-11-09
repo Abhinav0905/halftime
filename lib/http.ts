@@ -17,11 +17,44 @@ export function fail(message: string, status = 400): NextResponse {
   return NextResponse.json({ error: message }, { status });
 }
 
-export async function readJson<S extends z.ZodType>(req: Request, schema: S): Promise<z.infer<S>> {
+/** Every JSON body the app sends is a few hundred bytes; this leaves plenty of room. */
+export const MAX_JSON_BYTES = 64 * 1024;
+
+/**
+ * Read the whole body, stopping with a 413 as soon as it passes `max` bytes.
+ * Counting while streaming matters: a chunked upload has no Content-Length.
+ */
+export async function readBody(req: Request, max: number, tooLarge = "The request is too large."): Promise<Uint8Array<ArrayBuffer>> {
+  if (Number(req.headers.get("content-length")) > max) throw new HttpError(413, tooLarge);
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      throw new HttpError(413, tooLarge);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+export async function readJson<S extends z.ZodType>(req: Request, schema: S, maxBytes = MAX_JSON_BYTES): Promise<z.infer<S>> {
   let raw: unknown;
   try {
-    raw = await req.json();
-  } catch {
+    raw = JSON.parse(new TextDecoder().decode(await readBody(req, maxBytes)));
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
     throw new HttpError(400, "Expected a JSON body.");
   }
   const parsed = schema.safeParse(raw);

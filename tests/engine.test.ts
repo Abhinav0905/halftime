@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
-  band, cashStatus, reconcile, type CatalogLine, type Counts, type OrderForRecon, type ReconcileInput,
+  agreeingCounts, band, cashStatus, reconcile, samePerson, type CatalogLine, type Counts, type OrderForRecon, type ReconcileInput,
 } from "../lib/engine/reconcile";
 
 const CATALOG: CatalogLine[] = [
@@ -89,12 +89,53 @@ describe("reconcile: worked example", () => {
 });
 
 describe("cashStatus", () => {
+  const c = (countedBy: string, cents: number) => ({ countedBy, cents });
+
   it("needs two different people to agree", () => {
     expect(cashStatus([]).status).toBe("missing");
-    expect(cashStatus([{ countedBy: "A", cents: 5 }]).status).toBe("single");
-    expect(cashStatus([{ countedBy: "A", cents: 5 }, { countedBy: " a ", cents: 5 }]).status).toBe("single");
-    expect(cashStatus([{ countedBy: "A", cents: 5 }, { countedBy: "B", cents: 6 }]).status).toBe("disagree");
-    expect(cashStatus([{ countedBy: "A", cents: 5 }, { countedBy: "B", cents: 6 }, { countedBy: "C", cents: 6 }])).toEqual({ status: "agree", countedCents: 6 });
+    expect(cashStatus([c("A", 5)]).status).toBe("single");
+    expect(cashStatus([c("A", 5), c(" a ", 5)]).status).toBe("single");
+    expect(cashStatus([c("A", 5), c("B", 6)]).status).toBe("disagree");
+    expect(cashStatus([c("A", 5), c("B", 6), c("C", 6)])).toEqual({ status: "agree", countedCents: 6 });
+  });
+
+  it("agrees when a third count matches the first, even with a different count in between", () => {
+    expect(cashStatus([c("A", 500), c("B", 400), c("C", 500)])).toEqual({ status: "agree", countedCents: 500 });
+    expect(agreeingCounts([c("A", 500), c("B", 400), c("C", 500)])).toEqual([c("A", 500), c("C", 500)]);
+  });
+
+  it("does not let someone agree with their own earlier count", () => {
+    expect(cashStatus([c("A", 100), c("B", 90), c("A", 100)])).toEqual({ status: "disagree", countedCents: null });
+    expect(cashStatus([c("A", 100), c("B", 90), c("Ａ", 100)]).status).toBe("disagree"); // full-width letter
+  });
+
+  it("agrees when someone's recount matches the other person", () => {
+    expect(cashStatus([c("A", 100), c("B", 90), c("A", 90)])).toEqual({ status: "agree", countedCents: 90 });
+  });
+
+  it("only the latest count decides; an older matching pair does not count once a later count differs", () => {
+    expect(cashStatus([c("A", 100), c("B", 100), c("C", 95)]).status).toBe("disagree");
+  });
+});
+
+describe("samePerson", () => {
+  it("ignores case, spacing and invisible characters", () => {
+    expect(samePerson("Marcus Hill", "  marcus   HILL ")).toBe(true);
+    expect(samePerson("Marcus Hill", "Marcus\u200b Hill")).toBe(true);
+    expect(samePerson("Marcus Hill", "Marcus\u00a0Hill")).toBe(true);
+    expect(samePerson("Marcus Hill", "Marcus Hall")).toBe(false);
+  });
+});
+
+describe("deposit expected", () => {
+  it("never expects a negative deposit when the box holds less than the float", () => {
+    const counts = [{ countedBy: "A", cents: 5000 }, { countedBy: "B", cents: 5000 }];
+    const r = reconcile(input({ floatCents: 10_000, cashCounts: counts, depositCents: 0 }));
+    expect(r.depositExpectedCents).toBe(0);
+    expect(r.depositVarianceCents).toBe(0);
+    expect(r.depositBand).toBe("green");
+    const deposited = reconcile(input({ floatCents: 10_000, cashCounts: counts, depositCents: 5000 }));
+    expect(deposited.depositVarianceCents).toBe(5000);
   });
 });
 
@@ -110,6 +151,7 @@ const orderArb = fc
   .tuple(fc.constantFrom("COMPLETED", "COMPLETED", "COMPLETED", "REFUNDED", "DECLINED", "CREATED"), linesArb)
   .map(([status, lines]) => order(status, lines));
 
+// Anything goes: counts that may not add up, orders of every status. Reaches the recount branches.
 const scenario = fc.record({
   open: countsArb(60),
   close: countsArb(60),
@@ -118,18 +160,75 @@ const scenario = fc.record({
   floatCents: fc.integer({ min: 0, max: 50_000 }),
 });
 
+interface PricedNight {
+  open: Counts;
+  close: Counts;
+  waste: Counts;
+  orders: OrderForRecon[];
+  floatCents: number;
+  /** What the generator knows each item's cash units must be: sold − PayPal. */
+  cashUnits: Counts;
+}
+
+// A night whose counts agree with PayPal: for each item, sold ≤ opening, PayPal units ≤ sold,
+// waste fits in what was left. The cash total can always be priced, so the arithmetic
+// properties below run on every generated case instead of the 1–2% the random scenario prices.
+const itemArb = (open: number) =>
+  fc.integer({ min: 0, max: open }).chain((sold) =>
+    fc.record({
+      sold: fc.constant(sold),
+      paypal: fc.integer({ min: 0, max: sold }),
+      waste: fc.integer({ min: 0, max: Math.min(3, open - sold) }),
+      chunk: fc.integer({ min: 1, max: 4 }),
+    }),
+  );
+const notPaidArb = orderArb.filter((o) => o.status !== "COMPLETED");
+
+const pricedNight: fc.Arbitrary<PricedNight> = countsArb(60).chain((open) =>
+  fc
+    .record({
+      perItem: fc.tuple(...skus.map((s) => itemArb(open[s]!))),
+      noise: fc.array(notPaidArb, { maxLength: 6 }),
+      floatCents: fc.integer({ min: 0, max: 50_000 }),
+    })
+    .map(({ perItem, noise, floatCents }) => {
+      const close: Counts = {};
+      const waste: Counts = {};
+      const cashUnits: Counts = {};
+      // Split each item's PayPal units into chunks; order i carries chunk i of every item that has one.
+      const chunks: Record<string, number>[] = [];
+      skus.forEach((sku, i) => {
+        const { sold, paypal, waste: w, chunk } = perItem[i]!;
+        close[sku] = open[sku]! - sold - w;
+        waste[sku] = w;
+        cashUnits[sku] = sold - paypal;
+        for (let left = paypal, k = 0; left > 0; left -= chunk, k++) {
+          (chunks[k] ??= {})[sku] = Math.min(chunk, left);
+        }
+      });
+      const paid = chunks.map((lines) => order("COMPLETED", lines));
+      return { open, close, waste, orders: [...paid, ...noise], floatCents, cashUnits };
+    }),
+);
+
+const reconInput = (n: PricedNight) => input({ open: n.open, close: n.close, waste: n.waste, orders: n.orders, floatCents: n.floatCents });
+
 describe("reconcile properties", () => {
   it("adds up exactly in integer cents", () => {
     fc.assert(
-      fc.property(scenario, (s) => {
-        const r = reconcile(input(s));
-        if (r.expectedCashSalesCents === null) return r.recountSkus.length > 0;
+      fc.property(pricedNight, (n) => {
+        const r = reconcile(reconInput(n));
+        expect(r.recountSkus).toEqual([]);
+        expect(r.expectedCashSalesCents).not.toBeNull();
         const lineSum = r.lines.reduce((acc, l) => acc + (l.cashUnits ?? 0) * l.priceCents, 0);
         const soldValue = r.lines.reduce((acc, l) => acc + (l.sold ?? 0) * l.priceCents, 0);
+        const generated = skus.reduce((acc, sku) => acc + n.cashUnits[sku]! * PRICE.get(sku)!, 0);
         return (
           Number.isInteger(r.expectedCashSalesCents) &&
+          r.lines.every((l) => l.cashUnits === n.cashUnits[l.sku]) &&
           r.expectedCashSalesCents === lineSum &&
-          r.expectedBoxCents === r.expectedCashSalesCents + s.floatCents &&
+          r.expectedCashSalesCents === generated &&
+          r.expectedBoxCents === r.expectedCashSalesCents + n.floatCents &&
           // Every unit sold was paid for exactly once, by PayPal or in cash.
           r.totalSalesCents === soldValue
         );
@@ -139,32 +238,48 @@ describe("reconcile properties", () => {
 
   it("never expects negative cash", () => {
     fc.assert(
-      fc.property(scenario, (s) => {
-        const r = reconcile(input(s));
-        const linesOk = r.lines.every((l) => l.cashUnits === null || l.cashUnits >= 0);
-        return linesOk && (r.expectedCashSalesCents === null || (r.expectedCashSalesCents >= 0 && r.expectedBoxCents! >= s.floatCents));
+      fc.property(pricedNight, (n) => {
+        const r = reconcile(reconInput(n));
+        return (
+          r.expectedCashSalesCents !== null &&
+          r.expectedCashSalesCents >= 0 &&
+          r.expectedBoxCents! >= n.floatCents &&
+          r.lines.every((l) => l.cashUnits !== null && l.cashUnits >= 0)
+        );
       }),
     );
+    // Messy nights too: a line is either priced at zero or more, or left out for a recount.
+    fc.assert(fc.property(scenario, (s) => reconcile(input(s)).lines.every((l) => l.cashUnits === null || l.cashUnits >= 0)));
   });
 
   it("flags any item where PayPal units exceed units sold, and leaves it out of the cash total", () => {
+    // Start from a night that adds up, then raise one closing count past what PayPal allows.
+    const overCounted = fc
+      .tuple(pricedNight, fc.constantFrom(...skus), fc.integer({ min: 1, max: 3 }))
+      .filter(([n, sku]) => n.orders.some((o) => o.status === "COMPLETED" && o.items.some((l) => l.sku === sku)))
+      .map(([n, sku, extra]) => ({ ...n, sku, close: { ...n.close, [sku]: n.close[sku]! + n.cashUnits[sku]! + extra } }));
+    let flagged = 0;
     fc.assert(
-      fc.property(scenario, (s) => {
+      fc.property(fc.oneof(overCounted, scenario), (s) => {
         const r = reconcile(input(s));
         return r.lines.every((l) => {
-          if (l.sold === null || l.paypalUnits <= l.sold) return true;
+          if (l.sold === null || l.sold < 0 || l.paypalUnits <= l.sold) return true;
+          flagged++;
           return l.recount && l.cashUnits === null && l.cashCents === null && r.recountSkus.includes(l.sku) && r.expectedCashSalesCents === null;
         });
       }),
+      { numRuns: 200 },
     );
+    // Guard against a generator change that quietly stops reaching the case under test.
+    expect(flagged).toBeGreaterThan(50);
   });
 
   it("ignores refunded, declined and unpaid orders", () => {
     fc.assert(
-      fc.property(scenario, fc.array(orderArb, { maxLength: 10 }), (s, extra) => {
+      fc.property(fc.oneof(pricedNight, scenario), fc.array(orderArb, { maxLength: 10 }), (s, extra) => {
         const notPaid = extra.filter((o) => o.status !== "COMPLETED");
-        const base = reconcile(input(s));
-        const withExtra = reconcile(input({ ...s, orders: [...s.orders, ...notPaid] }));
+        const base = reconcile(input({ open: s.open, close: s.close, waste: s.waste, orders: s.orders, floatCents: s.floatCents }));
+        const withExtra = reconcile(input({ open: s.open, close: s.close, waste: s.waste, orders: [...s.orders, ...notPaid], floatCents: s.floatCents }));
         return (
           JSON.stringify(withExtra.lines) === JSON.stringify(base.lines) &&
           withExtra.paypalCents === base.paypalCents &&
@@ -186,6 +301,37 @@ describe("reconcile properties", () => {
         const after = reconcile(input({ ...s, orders: refunded }));
         const units = s.orders[idx]!.items.reduce((acc, l) => acc + l.quantity, 0);
         return after.paypalUnits === before.paypalUnits - units && after.paypalCents === before.paypalCents - s.orders[idx]!.totalCents;
+      }),
+    );
+  });
+
+  it("refunding a paid order on a night that adds up raises the expected cash by its items at menu prices", () => {
+    fc.assert(
+      fc.property(pricedNight, fc.nat(), (n, pick) => {
+        const paidIdx = n.orders.map((o, i) => (o.status === "COMPLETED" ? i : -1)).filter((i) => i >= 0);
+        fc.pre(paidIdx.length > 0);
+        const idx = paidIdx[pick % paidIdx.length]!;
+        const before = reconcile(reconInput(n));
+        const after = reconcile(reconInput({ ...n, orders: n.orders.map((o, i) => (i === idx ? { ...o, status: "REFUNDED" } : o)) }));
+        const value = n.orders[idx]!.items.reduce((acc, l) => acc + l.quantity * PRICE.get(l.sku)!, 0);
+        return after.expectedBoxCents !== null && after.expectedBoxCents - before.expectedBoxCents! === value;
+      }),
+    );
+  });
+});
+
+describe("cashStatus properties", () => {
+  const people = ["Jordan Lee", "Priya Shah", "Marcus Hill"];
+  const countsArbitrary = fc.array(fc.record({ countedBy: fc.constantFrom(...people), cents: fc.constantFrom(9000, 10_000) }), { maxLength: 6 });
+
+  it("agrees exactly when the latest count matches an earlier count by someone else", () => {
+    fc.assert(
+      fc.property(countsArbitrary, (counts) => {
+        const last = counts.at(-1);
+        const matched = !!last && counts.slice(0, -1).some((c) => c.cents === last.cents && c.countedBy !== last.countedBy);
+        const { status, countedCents } = cashStatus(counts);
+        if (matched) return status === "agree" && countedCents === last!.cents;
+        return status !== "agree" && countedCents === null;
       }),
     );
   });

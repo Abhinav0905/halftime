@@ -12,11 +12,11 @@ export interface EditorItem {
   name: string;
 }
 
-/** What PayPal already proves about an item during the closing count. */
-export interface FloorInfo {
-  open: number;
-  paypalUnits: number;
-}
+/**
+ * Per item PayPal sold: the opening count minus PayPal's units, i.e. the most
+ * that can be left before waste. Items PayPal didn't sell have no entry.
+ */
+export type LeftoverCaps = Record<string, number>;
 
 const CONFIDENCE: Record<Confidence, { label: string; tone: Tone }> = {
   high: { label: "high confidence", tone: "ok" },
@@ -24,26 +24,23 @@ const CONFIDENCE: Record<Confidence, { label: string; tone: Tone }> = {
   low: { label: "low confidence", tone: "bad" },
 };
 
-/**
- * Leftovers that PayPal's itemized sales make impossible: if PayPal recorded
- * p units sold, at most open − p − waste can still be on the table.
- */
-export function recountWarnings(items: EditorItem[], counts: Counts, waste: Counts | null, floor: Record<string, FloorInfo> | null): Record<string, string> {
+/** Leftovers that PayPal's itemized sales make impossible. Says nothing until an entry is over the cap. */
+export function recountWarnings(items: EditorItem[], counts: Counts, waste: Counts | null, caps: LeftoverCaps | null): Record<string, string> {
   const out: Record<string, string> = {};
-  if (!floor) return out;
+  if (!caps) return out;
   for (const item of items) {
-    const f = floor[item.sku];
-    if (!f || f.paypalUnits === 0) continue;
+    const cap = caps[item.sku];
+    if (cap === undefined) continue;
     const w = waste?.[item.sku] ?? 0;
-    const maxLeft = f.open - f.paypalUnits - w;
+    const maxLeft = cap - w;
     const left = counts[item.sku] ?? 0;
     if (left <= maxLeft) continue;
     if (maxLeft >= 0) {
-      out[item.sku] = `PayPal recorded ${f.paypalUnits} sold, so no more than ${maxLeft} can be left. Please recount.`;
-    } else if (w > 0) {
-      out[item.sku] = `PayPal recorded ${f.paypalUnits} sold, more than the opening count of ${f.open} minus ${w} waste. Check the waste entry.`;
+      out[item.sku] = `PayPal's sales show no more than ${maxLeft} can be left. Please recount.`;
+    } else if (cap >= 0) {
+      out[item.sku] = "The waste entered is more than PayPal's sales leave room for. Check the waste entry.";
     } else {
-      out[item.sku] = `PayPal recorded ${f.paypalUnits} sold, but the opening count was ${f.open}. The opening count may be off; the close-out will flag it for a recount.`;
+      out[item.sku] = "PayPal recorded more sold than the opening count. The opening count may be off; the close-out will flag it for a recount.";
     }
   }
   return out;
@@ -95,7 +92,7 @@ export function CountEditor({
   colors = {},
   waste = null,
   onWasteChange,
-  floor = null,
+  caps = null,
   onSelect,
 }: {
   items: EditorItem[];
@@ -108,12 +105,13 @@ export function CountEditor({
   /** Pass a waste map (closing count) to show a waste row for each item. */
   waste?: Counts | null;
   onWasteChange?: (next: Counts) => void;
-  floor?: Record<string, FloorInfo> | null;
+  /** Closing count only: see LeftoverCaps. */
+  caps?: LeftoverCaps | null;
   /** Tapping an item name, e.g. to show its boxes on the photo. */
   onSelect?: (sku: string) => void;
 }) {
   const [wasteOpen, setWasteOpen] = useState<Record<string, boolean>>({});
-  const warnings = recountWarnings(items, counts, waste, floor);
+  const warnings = recountWarnings(items, counts, waste, caps);
 
   return (
     <ul className="divide-y divide-line rounded-xl border border-line bg-card">
@@ -124,7 +122,6 @@ export function CountEditor({
         const conf = confidence?.[item.sku];
         const w = waste?.[item.sku] ?? 0;
         const showWaste = waste !== null && (w > 0 || wasteOpen[item.sku]);
-        const f = floor?.[item.sku];
         return (
           <li key={item.sku} className={cx("p-3 sm:p-4", warnings[item.sku] && "bg-warn-soft/60")}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -145,11 +142,6 @@ export function CountEditor({
                   )}
                   {sug !== undefined && conf && <Pill tone={CONFIDENCE[conf].tone}>{CONFIDENCE[conf].label}</Pill>}
                   {changed && <Pill tone="info">changed</Pill>}
-                  {f && f.paypalUnits > 0 && (
-                    <span>
-                      PayPal sold <span className="font-semibold text-ink-soft tabular">{f.paypalUnits}</span>
-                    </span>
-                  )}
                 </div>
               </div>
               <Stepper value={value} label={item.name} onChange={(n) => onCountsChange({ ...counts, [item.sku]: n })} />

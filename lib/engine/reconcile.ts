@@ -106,20 +106,31 @@ export function paypalUnitsBySku(orders: OrderForRecon[]): Counts {
   return units;
 }
 
+/** The latest count and the earlier count by someone else that matches it, or null if nobody else got the same total. */
+export function agreeingCounts(counts: CashCount[]): [CashCount, CashCount] | null {
+  const last = counts.at(-1);
+  if (!last) return null;
+  for (let i = counts.length - 2; i >= 0; i--) {
+    const earlier = counts[i]!;
+    if (earlier.cents === last.cents && !samePerson(earlier.countedBy, last.countedBy)) return [earlier, last];
+  }
+  return null;
+}
+
 export function cashStatus(counts: CashCount[]): { status: CashStatus; countedCents: number | null } {
-  if (counts.length === 0) return { status: "missing", countedCents: null };
-  if (counts.length === 1) return { status: "single", countedCents: null };
-  // The two most recent counts by different people decide it.
-  const last = counts[counts.length - 1]!;
-  const prev = [...counts].reverse().find((c) => samePerson(c.countedBy, last.countedBy) === false);
-  if (!prev) return { status: "single", countedCents: null };
-  return last.cents === prev.cents
-    ? { status: "agree", countedCents: last.cents }
-    : { status: "disagree", countedCents: null };
+  const last = counts.at(-1);
+  if (!last) return { status: "missing", countedCents: null };
+  // Two different people independently reaching the same total settles it, even if
+  // an earlier count in between was off (A 500, B 400, C 500 agrees on 500).
+  const pair = agreeingCounts(counts);
+  if (pair) return { status: "agree", countedCents: last.cents };
+  const someoneElse = counts.some((c) => !samePerson(c.countedBy, last.countedBy));
+  return someoneElse ? { status: "disagree", countedCents: null } : { status: "single", countedCents: null };
 }
 
 export function samePerson(a: string, b: string): boolean {
-  const norm = (x: string) => x.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  // Zero-width characters are invisible on screen, so they must not make two names different.
+  const norm = (x: string) => x.normalize("NFKC").replace(/[\u200b-\u200d\u2060\ufeff]/g, "").trim().replace(/\s+/g, " ").toLowerCase();
   return norm(a) === norm(b);
 }
 
@@ -179,7 +190,8 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
   const cs = cashStatus(cashCounts);
   const cashVarianceCents =
     expectedBoxCents !== null && cs.countedCents !== null ? cs.countedCents - expectedBoxCents : null;
-  const depositExpectedCents = cs.countedCents !== null ? cs.countedCents - floatCents : null;
+  // A box holding less than the float keeps all of it back, so nothing is expected at the bank.
+  const depositExpectedCents = cs.countedCents !== null ? Math.max(0, cs.countedCents - floatCents) : null;
   const depositVarianceCents =
     depositExpectedCents !== null && depositCents !== null ? depositCents - depositExpectedCents : null;
 

@@ -1,12 +1,14 @@
 // Photo storage. Files are named by their SHA-256, so the same photo is stored
 // once and a stored count can always be traced back to the exact image.
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { photoDir } from "./config";
 import { HttpError } from "./http";
 import { getPhoto, insertPhoto } from "./repo";
+import { SHA256_RE, sha256Hex } from "./sha256";
+
+export { SHA256_RE };
 
 export const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 
@@ -17,8 +19,6 @@ export const PHOTO_TYPES = {
 } as const;
 
 export type PhotoMime = keyof typeof PHOTO_TYPES;
-
-export const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** The type the bytes actually are, from their magic numbers. The upload's own label is not trusted. */
 export function sniffImageType(buf: Buffer): PhotoMime | null {
@@ -38,7 +38,7 @@ export function savePhoto(buffer: Buffer, declaredMime: string): { sha256: strin
   const mime = sniffImageType(buffer);
   if (!mime) throw new HttpError(415, "That file does not look like a JPEG, PNG or WebP photo.");
 
-  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  const sha256 = sha256Hex(buffer);
   const dir = photoDir();
   const file = path.join(dir, `${sha256}.${PHOTO_TYPES[mime]}`);
   if (!fs.existsSync(file)) {

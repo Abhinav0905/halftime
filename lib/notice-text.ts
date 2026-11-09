@@ -2,7 +2,7 @@
 // numbers behind it, and what to do next. Never an accusation.
 
 import { formatCents } from "./money";
-import { samePerson, type CashCount, type ReconcileResult } from "./engine/reconcile";
+import { agreeingCounts, type CashCount, type ReconcileResult } from "./engine/reconcile";
 import type { Night, Notice, OrderRow } from "./repo";
 
 export interface NoticeDraft {
@@ -23,12 +23,10 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-/** The two counts that settled the cash total: the latest, and the latest one before it by someone else. */
+/** The two people whose matching counts settled the cash total. */
 function agreeingCounters(counts: CashCount[]): string[] {
-  const last = counts[counts.length - 1];
-  if (!last) return [];
-  const prev = [...counts].reverse().find((c) => !samePerson(c.countedBy, last.countedBy));
-  return prev ? [prev.countedBy, last.countedBy] : [last.countedBy];
+  const pair = agreeingCounts(counts);
+  return pair ? pair.map((c) => c.countedBy) : [];
 }
 
 export function cashVarianceNotice(night: Night, recon: ReconcileResult, closedBy: string): NoticeDraft | null {
@@ -66,26 +64,80 @@ export function depositVarianceNotice(night: Night, recon: ReconcileResult, depo
   if (v === null || v === 0 || recon.depositBand === null || recon.depositBand === "green") return null;
   if (recon.depositCents === null || recon.depositExpectedCents === null || recon.cash.countedCents === null) return null;
   const amount = formatCents(Math.abs(v));
+  const counted = formatCents(recon.cash.countedCents);
+  const float = formatCents(night.floatCents);
+  const opening = `${depositor} recorded a bank deposit of ${formatCents(recon.depositCents)} for ${gameName(night)}. `;
+  if (recon.cash.countedCents < night.floatCents) {
+    // Counted − float would be negative; "the deposit should be −$50.00" helps nobody.
+    return {
+      level: recon.depositBand,
+      title: `Deposit of ${formatCents(recon.depositCents)} recorded when no deposit was expected`,
+      body:
+        opening +
+        `Two volunteers counted ${counted} in the box, which is less than the ${float} float, ` +
+        `so nothing was left to deposit after keeping back the float. Please compare the deposit slip with the count sheet.`,
+    };
+  }
   return {
     level: recon.depositBand,
     title: v < 0 ? `Deposit is ${amount} lower than the counted cash` : `Deposit is ${amount} higher than the counted cash`,
     body:
-      `${depositor} recorded a bank deposit of ${formatCents(recon.depositCents)} for ${gameName(night)}. ` +
-      `Two volunteers counted ${formatCents(recon.cash.countedCents)} in the box, so after keeping back the ` +
-      `${formatCents(night.floatCents)} float the deposit should be ${formatCents(recon.depositExpectedCents)}. ` +
+      opening +
+      `Two volunteers counted ${counted} in the box, so after keeping back the ` +
+      `${float} float the deposit should be ${formatCents(recon.depositExpectedCents)}. ` +
       `Please compare the deposit slip with the count sheet.`,
   };
 }
 
-export function lateRefundNotice(night: Night, order: OrderRow): NoticeDraft {
-  return {
-    level: "amber",
-    title: `PayPal order ${order.code} was refunded after close-out`,
-    body:
-      `Order ${order.code} (${formatCents(order.totalCents)}) from ${gameName(night)} was refunded in PayPal after the night was closed. ` +
-      `Its items now count as cash sales, so the expected cash for that night went up by ${formatCents(order.totalCents)}. ` +
-      `If the items came back to the stand or this was a duplicate charge, please add a note to the count sheet.`,
-  };
+/** Where the counted cash now stands against the expected box, in one sentence. */
+function cashStanding(recon: ReconcileResult): string {
+  const v = recon.cashVarianceCents;
+  if (v === null || recon.cash.countedCents === null) return "";
+  const counted = formatCents(recon.cash.countedCents);
+  if (v === 0) return ` The ${counted} counted in the box now matches exactly.`;
+  return ` The ${counted} counted in the box is now ${formatCents(Math.abs(v))} ${v < 0 ? "short of" : "over"} that.`;
+}
+
+/**
+ * A full refund recorded after the night was finalized. Its items move from the PayPal
+ * column to the cash column, so the expected cash changes. Pass the night's numbers from
+ * just before and just after the refund so the notice can say by how much.
+ */
+export function lateRefundNotice(
+  night: Night,
+  order: OrderRow,
+  change?: { before: ReconcileResult; after: ReconcileResult },
+): NoticeDraft {
+  const intro =
+    `Order ${order.code} (${formatCents(order.totalCents)}) from ${gameName(night)} was refunded in PayPal after the night was closed. ` +
+    `Its items now count as cash sales instead of PayPal sales. `;
+  const closing = ` If the items came back to the stand or this was a duplicate charge, please add a note to the count sheet.`;
+
+  let effect: string;
+  let level: NoticeDraft["level"] = "amber";
+  if (!change) {
+    effect = "That changes the expected cash for the night; the game page shows the updated numbers.";
+  } else {
+    const { before, after } = change;
+    if (after.cashBand === "red") level = "red";
+    if (after.expectedBoxCents === null) {
+      effect = !after.counted
+        ? "The expected cash will include them once both stock counts are saved."
+        : "Some items still need a recount, so the expected cash for the night still can't be worked out.";
+    } else if (before.expectedBoxCents === null) {
+      effect =
+        `Before the refund the expected cash couldn't be worked out because PayPal showed more sold than the counts did. ` +
+        `With the refund it can: ${formatCents(after.expectedBoxCents)} should have been in the box, including the ${formatCents(night.floatCents)} float.` +
+        cashStanding(after);
+    } else {
+      const up = after.expectedBoxCents - before.expectedBoxCents;
+      effect =
+        `The expected cash in the box went from ${formatCents(before.expectedBoxCents)} to ${formatCents(after.expectedBoxCents)}` +
+        (up > 0 ? `, up ${formatCents(up)}.` : ".") +
+        cashStanding(after);
+    }
+  }
+  return { level, title: `PayPal order ${order.code} was refunded after close-out`, body: intro + effect + closing };
 }
 
 export function partialRefundNotice(night: Night, order: OrderRow, refundCents: number): NoticeDraft {

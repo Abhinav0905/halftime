@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import type { Person, Reimbursement } from "@/lib/repo";
 import { formatCents, parseDollarInput } from "@/lib/money";
+import { payoutUnconfirmed } from "@/lib/payout-state";
 import { postJson } from "./api";
 import { LocalTime } from "./LocalTime";
 import { PersonSelect } from "./PersonSelect";
@@ -101,6 +102,8 @@ export function ReimbursementRequestForm({ nightId, people }: { nightId: string;
   );
 }
 
+const APPROVER_ROLES: Person["role"][] = ["officer", "treasurer"];
+
 export function ReimbursementCard({
   item,
   people,
@@ -112,20 +115,26 @@ export function ReimbursementCard({
 }) {
   const router = useRouter();
   const [approver, setApprover] = useState("");
+  const [email, setEmail] = useState(item.payeeEmail);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"approve" | "refresh" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "refresh" | "retry" | null>(null);
 
-  async function approve() {
+  const unknown = payoutUnconfirmed(item);
+
+  async function send(kind: "approve" | "retry", body: Record<string, string>) {
     setError(null);
     if (!approver) return setError("Choose who is approving.");
-    setBusy("approve");
-    const res = await postJson<{ status: string; payoutStatus: string | null; batchId: string | null }>(
-      `/api/reimbursements/${encodeURIComponent(item.id)}/approve`,
-      { approver },
-    );
+    setBusy(kind);
+    const res = await postJson(`/api/reimbursements/${encodeURIComponent(item.id)}/${kind}`, { approver, ...body });
     setBusy(null);
-    if (!res.ok) return setError(res.error);
+    if (!res.ok) setError(res.error);
+    // Refresh either way: a refused payout still changes what the card shows.
     router.refresh();
+  }
+
+  function retry() {
+    if (!EMAIL.test(email.trim())) return setError("Enter the PayPal email address of the person to repay.");
+    return send("retry", { payeeEmail: email.trim() });
   }
 
   async function refresh() {
@@ -133,18 +142,23 @@ export function ReimbursementCard({
     setBusy("refresh");
     const res = await postJson(`/api/reimbursements/${encodeURIComponent(item.id)}/refresh`);
     setBusy(null);
-    if (!res.ok) return setError(res.error);
+    if (!res.ok) setError(res.error);
     router.refresh();
   }
 
-  const statusPill =
-    item.status === "requested" ? (
-      <Pill tone="warn">Waiting for approval</Pill>
-    ) : item.status === "sent" ? (
-      <Pill tone="ok">{item.batchId?.startsWith("SIM-") ? "Recorded (offline demo)" : "Sent with PayPal"}</Pill>
-    ) : (
-      <Pill tone="bad">Payout failed</Pill>
-    );
+  const statusPill = unknown ? (
+    <Pill tone="warn">Waiting on PayPal</Pill>
+  ) : item.status === "requested" ? (
+    <Pill tone="warn">Waiting for approval</Pill>
+  ) : item.status === "sent" ? (
+    <Pill tone="ok">{item.batchId?.startsWith("SIM-") ? "Recorded (offline demo)" : "Sent with PayPal"}</Pill>
+  ) : (
+    <Pill tone="bad">Payout failed</Pill>
+  );
+
+  const approverPicker = (hint: string) => (
+    <PersonSelect label="Approved by" people={people} value={approver} onChange={setApprover} exclude={[item.requester]} roles={APPROVER_ROLES} hint={hint} />
+  );
 
   return (
     <Card>
@@ -166,27 +180,29 @@ export function ReimbursementCard({
         )}
       </div>
 
-      {item.status === "requested" && (
+      {item.status === "requested" && !unknown && (
         <div className="mt-4 border-t border-line pt-4">
           {openingCountDone ? (
             <div className="flex flex-wrap items-end gap-3">
               <div className="min-w-56 flex-1">
-                <PersonSelect
-                  label="Approved by"
-                  people={people}
-                  value={approver}
-                  onChange={setApprover}
-                  exclude={[item.requester]}
-                  hint={`Someone other than ${item.requester}. Approving sends the money with PayPal Payouts.`}
-                />
+                {approverPicker(`An officer or the treasurer, not ${item.requester}. Approving sends the money with PayPal Payouts.`)}
               </div>
-              <button type="button" className={buttonClass("primary", "lg")} disabled={busy !== null} onClick={approve}>
+              <button type="button" className={buttonClass("primary", "lg")} disabled={busy !== null} onClick={() => send("approve", {})}>
                 {busy === "approve" ? "Sending…" : `Approve and send ${formatCents(item.cents)}`}
               </button>
             </div>
           ) : (
             <Callout tone="info">Approval opens after the opening count, so the receipt can be checked against the stock on the table.</Callout>
           )}
+        </div>
+      )}
+
+      {unknown && (
+        <div className="mt-4 space-y-3 border-t border-line pt-4">
+          <Callout tone="warn">{item.error ?? "PayPal has not confirmed this payout yet."}</Callout>
+          <button type="button" className={buttonClass("secondary")} disabled={busy !== null} onClick={refresh}>
+            {busy === "refresh" ? "Checking…" : "Check with PayPal"}
+          </button>
         </div>
       )}
 
@@ -215,10 +231,26 @@ export function ReimbursementCard({
           {item.payoutStatus === "UNCLAIMED" && (
             <p className="mt-2 text-xs text-muted">Unclaimed means the email has no PayPal account yet. PayPal holds the money for 30 days.</p>
           )}
-          {item.batchId && (
+          {item.batchId && item.status === "sent" && (
             <button type="button" className={`${buttonClass("secondary")} mt-3`} disabled={busy !== null} onClick={refresh}>
               {busy === "refresh" ? "Checking…" : "Refresh status"}
             </button>
+          )}
+          {item.status === "failed" && (
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-ink-soft">
+                No money reached {item.payeeEmail}. Check the address, then send it again as a new PayPal payout.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Their PayPal email">
+                  <input type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" inputMode="email" />
+                </Field>
+                {approverPicker(`An officer or the treasurer, not ${item.requester}.`)}
+              </div>
+              <button type="button" className={buttonClass("primary")} disabled={busy !== null} onClick={retry}>
+                {busy === "retry" ? "Sending…" : `Send ${formatCents(item.cents)} again`}
+              </button>
+            </div>
           )}
         </div>
       )}

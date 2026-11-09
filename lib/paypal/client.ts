@@ -28,25 +28,45 @@ export class PayPalError extends Error {
     /** details[0].issue, e.g. INSTRUMENT_DECLINED. */
     public readonly issue: string | null,
     public readonly debugId: string | null,
+    /** hrefs from the error's links, e.g. the batch that already holds a reused sender_batch_id. */
+    public readonly links: string[] = [],
   ) {
     super(message);
   }
 }
 
+/**
+ * True when PayPal may have acted on the request even though no answer came back:
+ * a timeout, a dropped connection or a 5xx. Treat the outcome as unknown, never as a failure.
+ */
+export function outcomeUnknown(err: PayPalError): boolean {
+  if (err.name === "NOT_CONFIGURED") return false;
+  return err.name === "NETWORK_ERROR" || err.status >= 500;
+}
+
+interface ErrorLink { href?: string }
+
 interface PayPalErrorBody {
   name?: string;
   message?: string;
   debug_id?: string;
-  details?: { issue?: string; description?: string }[];
+  // Payouts put links under details[].link; other APIs use links.
+  details?: { issue?: string; description?: string; link?: ErrorLink[]; links?: ErrorLink[] }[];
+  links?: ErrorLink[];
   // OAuth endpoint errors use a different shape.
   error?: string;
   error_description?: string;
 }
 
+function linksOf(body: PayPalErrorBody | undefined): string[] {
+  const all = [...(body?.details ?? []).flatMap((d) => [...(d.link ?? []), ...(d.links ?? [])]), ...(body?.links ?? [])];
+  return all.map((l) => l?.href).filter((h): h is string => typeof h === "string" && h.length > 0);
+}
+
 function fromBody(status: number, body: PayPalErrorBody | undefined, fallback: string): PayPalError {
   const detail = body?.details?.[0];
   const message = detail?.description ?? body?.message ?? body?.error_description ?? fallback;
-  return new PayPalError(message, status, body?.name ?? body?.error ?? `HTTP_${status}`, detail?.issue ?? null, body?.debug_id ?? null);
+  return new PayPalError(message, status, body?.name ?? body?.error ?? `HTTP_${status}`, detail?.issue ?? null, body?.debug_id ?? null, linksOf(body));
 }
 
 function parseBody(text: string): PayPalErrorBody | undefined {
@@ -139,8 +159,10 @@ export function paypal(): Sdk {
       oAuthClientSecret: clientSecret,
       oAuthTokenProvider: async () => toSdkToken(await cachedToken()),
     },
-    // GETs are safe to retry; POSTs rely on PayPal-Request-Id instead.
-    httpClientOptions: { timeout: TIMEOUT_MS, retryConfig: { maxNumberOfRetries: 2 } },
+    // The SDK retries only GET and PUT, here up to twice after a 5xx, 429 or dropped connection.
+    // maximumRetryWaitTime is in seconds and defaults to 0, which would turn retries off.
+    // POSTs are never retried by the SDK; they rely on PayPal-Request-Id instead.
+    httpClientOptions: { timeout: TIMEOUT_MS, retryConfig: { maxNumberOfRetries: 2, maximumRetryWaitTime: 5 } },
     // No `logging` key: the SDK then uses its null logger, so request bodies and tokens never reach stdout.
   });
   sdk = { client, orders: new OrdersController(client), payments: new PaymentsController(client) };

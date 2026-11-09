@@ -6,7 +6,7 @@ import { newId, pickupCode } from "@/lib/ids";
 import { PayPalError } from "@/lib/paypal/client";
 import { createOrder } from "@/lib/paypal/orders";
 import { buildOrderRequest, CartSchema, type BuiltOrder } from "@/lib/paypal/payload";
-import { audit, codeTaken, getClub, getNight, getOrder, insertOrder, listItems, type OrderRow } from "@/lib/repo";
+import { audit, codeTaken, getClub, getCounts, getNight, getOrder, insertOrder, listItems, type OrderRow } from "@/lib/repo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,16 +31,27 @@ function existing(o: OrderRow): Response {
   return ok({ id: o.id, code: o.code, totalCents: o.totalCents, simulated: o.simulated });
 }
 
+const NOT_SELLING = "The stand is not taking orders right now.";
+
 export const POST = handle(async (req: Request) => {
   const body = await readJson(req, Body);
   const night = getNight(body.nightId);
   if (!night) throw new HttpError(404, "That game was not found.");
-  if (night.status !== "selling") throw new HttpError(409, "The stand is not taking orders right now.");
+  if (night.status !== "selling") throw new HttpError(409, NOT_SELLING);
+
+  // Only items that were on the table at the opening count can be sold.
+  const open = getCounts(night.id).open;
+  const catalog = listItems();
+  const onSale = catalog.filter((i) => !open || (open.counts[i.sku] ?? 0) > 0);
+  for (const [sku, qty] of Object.entries(body.cart)) {
+    const item = catalog.find((i) => i.sku === sku);
+    if (qty > 0 && item && !onSale.includes(item)) throw new HttpError(400, `${item.name} isn't on sale tonight.`);
+  }
 
   const code = freeCode(night.id);
   let built: BuiltOrder;
   try {
-    built = buildOrderRequest(body.cart, listItems(), {
+    built = buildOrderRequest(body.cart, onSale, {
       nightId: night.id,
       booth: body.booth,
       code,
@@ -64,6 +75,10 @@ export const POST = handle(async (req: Request) => {
       throw err;
     }
   }
+
+  // The closing count may have started while PayPal was creating the order. The unpaid PayPal order simply expires.
+  // Nothing awaits between this check and the insert, so the status cannot change in between.
+  if (getNight(night.id)?.status !== "selling") throw new HttpError(409, NOT_SELLING);
 
   // A repeated requestId gets PayPal's original order back; answer with the row we already stored.
   const prior = getOrder(id);

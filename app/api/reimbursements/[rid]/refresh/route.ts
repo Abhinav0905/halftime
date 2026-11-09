@@ -1,8 +1,8 @@
-import { publish } from "@/lib/events";
 import { HttpError, handle, ok } from "@/lib/http";
-import { PayPalError } from "@/lib/paypal/client";
-import { getPayoutBatch, getPayoutItem, payoutFailed, type PayoutItem } from "@/lib/paypal/payouts";
-import { audit, getReimbursement, updateReimbursement } from "@/lib/repo";
+import { PayPalError, outcomeUnknown } from "@/lib/paypal/client";
+import { getPayoutBatch, getPayoutItem, type PayoutItem } from "@/lib/paypal/payouts";
+import { PAYOUT_UNKNOWN, recordPayoutStatus, settleUnknownPayout } from "@/lib/paypal/reimbursements";
+import { getReimbursement } from "@/lib/repo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,20 @@ export const POST = handle(async (_req: Request, ctx: { params: Promise<{ rid: s
   const { rid } = await ctx.params;
   const r = getReimbursement(rid);
   if (!r) throw new HttpError(404, "That reimbursement was not found.");
-  if (!r.batchId) throw new HttpError(409, "This reimbursement has not been sent yet.");
+
+  if (!r.batchId) {
+    if (r.payoutStatus !== PAYOUT_UNKNOWN) throw new HttpError(409, "This reimbursement has not been sent yet.");
+    // No batch id because PayPal never answered the create call. Sending the same try again either
+    // finds PayPal's batch or sends it now; either way it is paid at most once.
+    const { reimbursement: now, outcome } = await settleUnknownPayout(rid);
+    if (outcome?.kind === "unknown") {
+      if (outcomeUnknown(outcome.error)) throw new HttpError(503, "PayPal still did not answer. Please try again in a minute.");
+      // PayPal answered, but not in a way that says whether the first send went through. It stays unconfirmed.
+      throw new HttpError(502, now.error ?? `PayPal answered: ${outcome.error.message}`);
+    }
+    if (outcome?.kind === "rejected") throw new HttpError(502, `PayPal did not accept the payout: ${outcome.error.message}`);
+    return ok({ status: now.status, payoutStatus: now.payoutStatus });
+  }
   if (r.batchId.startsWith("SIM-")) return ok({ status: r.status, payoutStatus: r.payoutStatus });
 
   let item: PayoutItem | null;
@@ -30,15 +43,8 @@ export const POST = handle(async (_req: Request, ctx: { params: Promise<{ rid: s
   }
 
   const payoutStatus = item?.status ?? batchStatus ?? r.payoutStatus;
-  const failed = payoutFailed(payoutStatus);
-  if (payoutStatus !== r.payoutStatus || (item && item.itemId !== r.itemId) || (failed && r.status !== "failed")) {
-    updateReimbursement(rid, {
-      payoutStatus,
-      itemId: item?.itemId ?? r.itemId,
-      ...(failed ? { status: "failed" as const, error: item?.error ?? `PayPal reported the payout as ${payoutStatus}.` } : {}),
-    });
-    audit(r.nightId, null, "reimbursement.payout_status", { id: rid, payoutStatus, itemId: item?.itemId ?? r.itemId });
-    publish(r.nightId, { type: "reimbursement.updated", id: rid });
+  if (payoutStatus) {
+    recordPayoutStatus(r, { status: payoutStatus, batchId: r.batchId, itemId: item?.itemId ?? null, error: item?.error ?? null }, null);
   }
   const now = getReimbursement(rid)!;
   return ok({ status: now.status, payoutStatus: now.payoutStatus });

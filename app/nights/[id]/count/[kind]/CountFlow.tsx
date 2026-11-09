@@ -3,15 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BoxOverlay, skuColors } from "@/components/count/BoxOverlay";
-import { CountEditor, recountWarnings, type EditorItem, type FloorInfo } from "@/components/count/CountEditor";
+import { CountEditor, recountWarnings, type EditorItem, type LeftoverCaps } from "@/components/count/CountEditor";
 import { PhotoCapture } from "@/components/count/PhotoCapture";
 import { PersonSelect } from "@/components/PersonSelect";
+import { postJson } from "@/components/api";
 import { Callout, Card, buttonClass, cx } from "@/components/ui";
 import type { Counts } from "@/lib/engine/reconcile";
 import type { Person } from "@/lib/repo";
+import { MESSAGES } from "@/lib/vision/messages";
 import type { Confidence, CountResult } from "@/lib/vision/schema";
-
-export type FloorMap = Record<string, FloorInfo>;
 
 interface SuggestResponse {
   suggestionId: string | null;
@@ -23,7 +23,7 @@ interface SuggestResponse {
 
 type Phase = "photo" | "counting" | "review";
 
-const FALLBACK = "The photo count did not work this time. Count by hand; the photo is still saved.";
+const NO_CONNECTION = "No connection, so the photo count was skipped. Count by hand; the photo is still saved.";
 
 function zeros(items: EditorItem[]): Counts {
   return Object.fromEntries(items.map((i) => [i.sku, 0]));
@@ -46,17 +46,23 @@ export function CountFlow({
   kind,
   items,
   people,
-  floor,
+  caps,
   initialCounts,
   initialWaste,
+  demoPhoto,
+  closesMenu,
 }: {
   nightId: string;
   kind: "open" | "close";
   items: EditorItem[];
   people: Person[];
-  floor: FloorMap | null;
+  caps: LeftoverCaps | null;
   initialCounts: Counts | null;
   initialWaste: Counts | null;
+  /** URL of a bundled sample photo for this count, when one is installed. */
+  demoPhoto: string | null;
+  /** Saving this count moves the night out of selling, which stops new fan orders. */
+  closesMenu: boolean;
 }) {
   const router = useRouter();
   const colors = useMemo(() => skuColors(items.map((i) => i.sku)), [items]);
@@ -73,10 +79,9 @@ export function CountFlow({
   const [highlight, setHighlight] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  // Bumped whenever a pending photo count should be ignored: a retake or counting by hand.
+  const requestRef = useRef(0);
   const elapsed = useElapsed(phase === "counting");
-
-  useEffect(() => () => abortRef.current?.abort(), []);
 
   const result = suggestion?.result ?? null;
   const suggestedCounts = useMemo(() => (result ? Object.fromEntries(result.items.map((i) => [i.sku, i.count])) : null), [result]);
@@ -84,52 +89,44 @@ export function CountFlow({
     () => (result ? (Object.fromEntries(result.items.map((i) => [i.sku, i.confidence])) as Record<string, Confidence>) : null),
     [result],
   );
-  const warnings = recountWarnings(items, counts, kind === "close" ? waste : null, floor);
+  const warnings = recountWarnings(items, counts, kind === "close" ? waste : null, caps);
   const warningCount = Object.keys(warnings).length;
   const toCheck = result ? result.items.filter((i) => i.confidence !== "high").map((i) => nameOf.get(i.sku) ?? i.sku) : [];
   const changedCount = suggestedCounts ? items.filter((i) => (suggestedCounts[i.sku] ?? 0) !== (counts[i.sku] ?? 0)).length : 0;
 
   async function onUploaded(p: { sha256: string; url: string }) {
+    const request = ++requestRef.current;
     setPhoto(p);
     setSuggestion(null);
     setReason(null);
     setHighlight(null);
     setPhase("counting");
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      const res = await fetch(`/api/nights/${encodeURIComponent(nightId)}/suggest`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind, sha256: p.sha256 }),
-        signal: controller.signal,
-      });
-      const body = (await res.json()) as SuggestResponse & { error?: string };
-      if (!res.ok) throw new Error(body.error ?? FALLBACK);
+    const res = await postJson<SuggestResponse>(`/api/nights/${encodeURIComponent(nightId)}/suggest`, { kind, sha256: p.sha256 });
+    if (request !== requestRef.current) return;
+    if (res.ok && res.data) {
+      const body = res.data;
+      const suggested = body.result;
       setSuggestion(body);
-      if (body.result) {
-        setCounts(Object.fromEntries(items.map((i) => [i.sku, body.result?.items.find((r) => r.sku === i.sku)?.count ?? 0])));
-      }
-      setReason(body.result ? body.message ?? null : body.message ?? FALLBACK);
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      setReason((err as Error).message || FALLBACK);
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      if (!controller.signal.aborted) setPhase("review");
+      if (suggested) setCounts(Object.fromEntries(items.map((i) => [i.sku, suggested.items.find((r) => r.sku === i.sku)?.count ?? 0])));
+      setReason(suggested ? body.message ?? null : body.message ?? MESSAGES.failed);
+    } else if (res.status === 0) {
+      setReason(NO_CONNECTION);
+    } else {
+      // Show the server's own plain message when there is one; a proxy error page gets the standard fallback.
+      setReason(!res.ok && typeof res.data?.error === "string" ? res.error : MESSAGES.failed);
     }
+    setPhase("review");
   }
 
   function countByHand(why: string) {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    requestRef.current++;
     setSuggestion(null);
     setReason(why);
     setPhase("review");
   }
 
   function retake() {
-    abortRef.current?.abort();
+    requestRef.current++;
     setPhase("photo");
   }
 
@@ -140,28 +137,22 @@ export function CountFlow({
       return;
     }
     setSaving(true);
-    try {
-      const res = await fetch(`/api/nights/${encodeURIComponent(nightId)}/counts`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind,
-          counts,
-          ...(kind === "close" ? { waste } : {}),
-          countedBy,
-          checkedBy,
-          sha256: photo?.sha256 ?? null,
-          suggestionId: suggestion?.suggestionId ?? null,
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) throw new Error(body.error ?? `Saving failed (HTTP ${res.status}).`);
-      router.push(kind === "open" ? `/nights/${nightId}` : `/nights/${nightId}/close`);
-      router.refresh();
-    } catch (err) {
-      setError((err as Error).message);
+    const res = await postJson<{ status: string }>(`/api/nights/${encodeURIComponent(nightId)}/counts`, {
+      kind,
+      counts,
+      ...(kind === "close" ? { waste } : {}),
+      countedBy,
+      checkedBy,
+      sha256: photo?.sha256 ?? null,
+      suggestionId: suggestion?.suggestionId ?? null,
+    });
+    if (!res.ok) {
+      setError(res.error);
       setSaving(false);
+      return;
     }
+    router.push(kind === "open" ? `/nights/${nightId}` : `/nights/${nightId}/close`);
+    router.refresh();
   }
 
   if (phase === "photo") {
@@ -178,6 +169,7 @@ export function CountFlow({
             purpose={kind}
             onUploaded={onUploaded}
             label={kind === "open" ? "Photograph the stocked table" : "Photograph what is left"}
+            demoSrc={demoPhoto}
           />
         </Card>
         <button
@@ -224,7 +216,7 @@ export function CountFlow({
         {photo && result ? (
           <BoxOverlay
             src={photo.url}
-            items={result.items.map((i) => ({ sku: i.sku, name: nameOf.get(i.sku) ?? i.sku, color: colors[i.sku] ?? "#475569", boxes: i.boxes }))}
+            items={result.items.map((i) => ({ sku: i.sku, name: nameOf.get(i.sku) ?? i.sku, color: colors[i.sku] ?? "#475569", count: i.count, boxes: i.boxes }))}
             highlight={highlight}
             onHighlight={setHighlight}
           />
@@ -236,12 +228,13 @@ export function CountFlow({
 
         {result ? (
           <Callout tone="info" title="Suggested count from the photo">
-            Each box is one counted item. Tap an item to see only its boxes. Check every number against the table and fix any that are off.
-            {suggestion?.provider === "replay" && " (This is a recorded result for this sample photo.)"}
+            Boxes mark the items the photo count found. Units hidden behind others may have no box, so a count can be higher than its
+            boxes. Tap an item to see only its boxes. Check every number against the table and fix any that are off.
+            {suggestion?.provider === "replay" && !reason && " (This is the recorded count for this photo.)"}
             {reason && <span className="mt-1 block">{reason}</span>}
           </Callout>
         ) : (
-          <Callout tone="warn" title="Count by hand">{reason ?? FALLBACK}</Callout>
+          <Callout tone="warn" title="Count by hand">{reason ?? MESSAGES.failed}</Callout>
         )}
 
         {result && toCheck.length > 0 && (
@@ -276,7 +269,7 @@ export function CountFlow({
           colors={result ? colors : {}}
           waste={kind === "close" ? waste : null}
           onWasteChange={setWaste}
-          floor={floor}
+          caps={caps}
           onSelect={result ? (sku) => setHighlight((h) => (h === sku ? null : sku)) : undefined}
         />
 
@@ -313,10 +306,16 @@ export function CountFlow({
             PayPal&apos;s itemized sales show fewer can be left than these numbers say. If you save anyway, the close-out will ask for a recount.
           </Callout>
         )}
+        {closesMenu && (
+          <Callout tone="warn" title="Saving this closes the fan menu">
+            Once the closing count is saved, fans can no longer start orders from the booth QR code. Save it when the stand is done
+            selling.
+          </Callout>
+        )}
         {error && <Callout tone="bad">{error}</Callout>}
 
         <button type="button" onClick={save} disabled={saving} className={cx(buttonClass("primary", "lg"), "w-full")}>
-          {saving ? "Saving…" : kind === "open" ? "Save opening count" : "Save closing count"}
+          {saving ? "Saving…" : kind === "open" ? "Save opening count" : closesMenu ? "Save and close the fan menu" : "Save closing count"}
         </button>
       </div>
     </div>

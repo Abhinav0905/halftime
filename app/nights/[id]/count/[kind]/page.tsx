@@ -1,8 +1,12 @@
 import { notFound } from "next/navigation";
+import { LocalTime } from "@/components/LocalTime";
+import { formatGameDate } from "@/components/format";
 import { Callout, LinkButton, PageHeader } from "@/components/ui";
 import { paypalUnitsBySku } from "@/lib/engine/reconcile";
-import { getCounts, getNight, listItems, listOrders, listPeople } from "@/lib/repo";
-import { CountFlow, type FloorMap } from "./CountFlow";
+import { getCounts, getNight, listCashCounts, listItems, listOrders, listPeople } from "@/lib/repo";
+import { demoPhotoUrl } from "@/lib/vision/demo";
+import type { LeftoverCaps } from "@/components/count/CountEditor";
+import { CountFlow } from "./CountFlow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,10 +22,6 @@ const COPY = {
   },
 } as const;
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
-}
-
 export default async function CountPage({ params }: { params: Promise<{ id: string; kind: string }> }) {
   const { id, kind } = await params;
   if (kind !== "open" && kind !== "close") notFound();
@@ -30,7 +30,7 @@ export default async function CountPage({ params }: { params: Promise<{ id: stri
 
   const copy = COPY[kind];
   const back = { href: `/nights/${id}`, label: night.title };
-  const header = <PageHeader title={copy.title} subtitle={`${night.title} · ${night.date}`} back={back} />;
+  const header = <PageHeader title={copy.title} subtitle={`${night.title} · ${formatGameDate(night.date, { year: true })}`} back={back} />;
 
   const orders = listOrders(id);
   const counts = getCounts(id);
@@ -49,6 +49,12 @@ export default async function CountPage({ params }: { params: Promise<{ id: stri
     };
   } else if (night.status === "closed" || night.status === "deposited") {
     blocked = { title: "This game is finalized, so the closing count is locked.", body: "Ask an officer if a count needs to be corrected." };
+  } else if (listCashCounts(id).length > 0) {
+    blocked = {
+      title: "Counts are locked because cash counting has started.",
+      body: "If something was off, add a note about it when you finalize the night.",
+      action: { href: `/nights/${id}/close`, label: "Back to the close-out" },
+    };
   }
 
   if (blocked) {
@@ -66,22 +72,33 @@ export default async function CountPage({ params }: { params: Promise<{ id: stri
 
   const items = listItems().map((i) => ({ sku: i.sku, name: i.name }));
   const existing = counts[kind];
+  // The counts route moves a selling night to closing when this is saved, and the fan menu stops taking orders.
+  const closesMenu = kind === "close" && night.status === "selling";
 
-  // During the closing count PayPal's itemized sales cap how many units can be left.
-  let floor: FloorMap | null = null;
+  // One number per item PayPal sold goes to the browser: opening count minus PayPal units, the most that can be
+  // left. That is all the "PayPal checks the count" warning needs, and nothing is shown until an entry is over it.
+  // The closing counter can still infer limits from it. That is accepted because those two may not count the cash
+  // (checkCashCounterNotCloser), so the cash count stays blind. Saved leftovers aren't sent back for a recount.
+  let caps: LeftoverCaps | null = null;
   if (kind === "close" && counts.open) {
+    const open = counts.open.counts;
     const paypal = paypalUnitsBySku(orders.map((o) => ({ status: o.status, items: o.items, totalCents: o.totalCents })));
-    floor = Object.fromEntries(items.map((i) => [i.sku, { open: counts.open?.counts[i.sku] ?? 0, paypalUnits: paypal[i.sku] ?? 0 }]));
+    caps = Object.fromEntries(items.filter((i) => (paypal[i.sku] ?? 0) > 0).map((i) => [i.sku, (open[i.sku] ?? 0) - (paypal[i.sku] ?? 0)]));
   }
 
   return (
     <div>
       {header}
-      <p className="-mt-3 mb-5 max-w-2xl text-base text-ink-soft">{copy.why}</p>
+      <p className="-mt-3 mb-5 max-w-2xl text-base text-ink-soft">
+        {copy.why}
+        {closesMenu && " Do this once the stand is done selling: saving it closes the fan menu."}
+      </p>
       {existing && (
         <div className="mb-5 max-w-2xl">
           <Callout tone="neutral" title="This count was already saved.">
-            Counted by {existing.countedBy}, checked by {existing.checkedBy}, {formatTime(existing.createdAt)}. Saving again replaces it, and the change is kept in the history.
+            Counted by {existing.countedBy}, checked by {existing.checkedBy}, <LocalTime iso={existing.createdAt} />.
+            {kind === "close" && " A recount starts from zero, so count every item on the table again. Waste entries are kept."} Saving
+            again replaces it, and the change is kept in the history.
           </Callout>
         </div>
       )}
@@ -90,9 +107,11 @@ export default async function CountPage({ params }: { params: Promise<{ id: stri
         kind={kind}
         items={items}
         people={listPeople()}
-        floor={floor}
-        initialCounts={existing?.counts ?? null}
+        caps={caps}
+        initialCounts={kind === "open" ? existing?.counts ?? null : null}
         initialWaste={existing?.waste ?? null}
+        demoPhoto={demoPhotoUrl(kind)}
+        closesMenu={closesMenu}
       />
     </div>
   );

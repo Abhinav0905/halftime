@@ -5,9 +5,10 @@ import { publish } from "@/lib/events";
 import { HttpError, handle, ok, readJson } from "@/lib/http";
 import { SHA256_RE } from "@/lib/photos";
 import {
-  audit, getCounts, getNight, getPhoto, getSuggestion, listItems, listOrders, saveCount, setNightStatus, tx,
+  audit, getCounts, getNight, getPhoto, getSuggestion, listCashCounts, listItems, listOrders, saveCount, setNightStatus, tx,
   type Item, type NightStatus,
 } from "@/lib/repo";
+import { requireRosterName } from "@/lib/roster";
 import { CountResultSchema } from "@/lib/vision/schema";
 
 export const runtime = "nodejs";
@@ -48,7 +49,10 @@ export const POST = handle(async (req: Request, ctx: { params: Promise<{ id: str
   const body = await readJson(req, Body);
   const { kind, counts } = body;
 
-  const peopleError = checkCountPeople(body.countedBy, body.checkedBy);
+  // Roster spellings, so "marcus  hill" can't pass as a second person.
+  const countedBy = requireRosterName(body.countedBy, "Whoever counted");
+  const checkedBy = requireRosterName(body.checkedBy, "Whoever checked the count");
+  const peopleError = checkCountPeople(countedBy, checkedBy);
   if (peopleError) throw new HttpError(400, peopleError);
 
   const items = listItems();
@@ -81,9 +85,6 @@ export const POST = handle(async (req: Request, ctx: { params: Promise<{ id: str
   const photoSha256 = body.sha256 ?? suggestion?.photoSha256 ?? null;
   if (photoSha256 && !getPhoto(photoSha256)) throw new HttpError(400, "That photo was not found. Please take it again.");
 
-  const countedBy = body.countedBy.trim();
-  const checkedBy = body.checkedBy.trim();
-
   // Status checks and the write share one transaction so an order captured
   // at the same moment cannot slip in between them.
   const { status, changed } = tx(() => {
@@ -102,6 +103,11 @@ export const POST = handle(async (req: Request, ctx: { params: Promise<{ id: str
       if (night.status === "setup") throw new HttpError(409, "Save the opening count before the closing count.");
       if (!(night.status === "selling" || night.status === "closing")) {
         throw new HttpError(409, "This game is finalized, so the closing count is locked.");
+      }
+      // The expected cash comes from this count. Once the box has been counted, changing
+      // the leftovers could line the expected amount up with the cash, so it stays as saved.
+      if (listCashCounts(id).length > 0) {
+        throw new HttpError(409, "The cash box has been counted, so the closing count is locked. If a count was off, add a note when you finalize the night.");
       }
       next = "closing";
     }

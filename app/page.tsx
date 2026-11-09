@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { getClub, getLedger, getNightState, type LedgerRow } from "@/lib/repo";
+import { getClub, getLedger, type LedgerRow } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { formatCents } from "@/lib/money";
 import { ActionButton } from "@/components/ActionButton";
 import { formatGameDate } from "@/components/format";
+import { GameDayLabel, TonightDate } from "@/components/GameDay";
 import { nextStep } from "@/components/nextStep";
 import { Card, LinkButton, NightStatusPill, Pill, Variance } from "@/components/ui";
 
@@ -13,9 +14,10 @@ export default function Home() {
   ensureSeeded();
   const club = getClub();
   const ledger = getLedger();
-  const current = ledger.find((r) => r.status !== "deposited");
-  const state = current ? getNightState(current.nightId) : null;
-  const recent = ledger.filter((r) => r.nightId !== current?.nightId).slice(0, 8);
+  // Every game that still needs a step, newest first: last week's game can still be waiting on its deposit tonight.
+  const unfinished = ledger.filter((r) => r.status !== "deposited");
+  const recent = ledger.filter((r) => r.status === "deposited").slice(0, 8);
+  const resetEnabled = process.env.DEMO_RESET_ENABLED !== "false";
 
   return (
     <div className="space-y-6">
@@ -24,22 +26,15 @@ export default function Home() {
         <h1 className="text-2xl font-bold tracking-tight text-ink">Concession stand close-out</h1>
       </div>
 
-      {state ? (
-        <TonightCard
-          id={state.night.id}
-          title={state.night.title}
-          date={state.night.date}
-          status={state.night.status}
-          sample={state.night.sample}
-          paypalOrders={state.recon.paypalOrders}
-          paypalCents={state.recon.paypalCents}
-          step={nextStep({
-            id: state.night.id,
-            status: state.night.status,
-            cashStatus: state.recon.cash.status,
-            recount: state.recon.recountSkus.length > 0,
-          })}
-        />
+      {unfinished.length > 0 ? (
+        <>
+          {unfinished.map((r) => (
+            <GameCard key={r.nightId} row={r} />
+          ))}
+          <div>
+            <LinkButton href="/nights/new" variant="secondary">Start a new game</LinkButton>
+          </div>
+        </>
       ) : (
         <Card className="border-brand/30">
           <h2 className="text-lg font-semibold text-ink">No game in progress</h2>
@@ -74,50 +69,44 @@ export default function Home() {
         <Link href="/how-it-works" className="mt-2 inline-block font-medium text-brand hover:underline">How the math works</Link>
       </section>
 
-      <div className="border-t border-line pt-4">
-        <ActionButton
-          url="/api/demo/reset"
-          label="Reset demo data"
-          pendingLabel="Resetting…"
-          confirm="Reset the demo? This deletes every game you created and restores the three sample games."
-          redirectTo="/"
-        />
-        <p className="mt-1 text-xs text-muted">Restores the sample season. Use it before a demo.</p>
-      </div>
+      {resetEnabled && (
+        <div className="border-t border-line pt-4">
+          <ActionButton
+            url="/api/demo/reset"
+            body={{ confirm: "reset" }}
+            label="Reset demo data"
+            pendingLabel="Resetting…"
+            confirm="Reset the demo? This deletes every game you created and restores the three sample games."
+            redirectTo="/"
+          />
+          <p className="mt-1 text-xs text-muted">Restores the sample season. Use it before a demo.</p>
+        </div>
+      )}
     </div>
   );
 }
 
-function TonightCard(props: {
-  id: string;
-  title: string;
-  date: string;
-  status: LedgerRow["status"];
-  sample: boolean;
-  paypalOrders: number;
-  paypalCents: number;
-  step: ReturnType<typeof nextStep>;
-}) {
-  const { id, title, date, status, sample, paypalOrders, paypalCents, step } = props;
+function GameCard({ row }: { row: LedgerRow }) {
+  const step = nextStep({ id: row.nightId, status: row.status, cashStatus: row.cashStatus, recount: row.recountSkus.length > 0 });
   return (
     <Card className="border-brand/40 ring-1 ring-brand/20">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted">Tonight</span>
-        <NightStatusPill status={status} />
-        {sample && <Pill>Sample data</Pill>}
+        <GameDayLabel date={row.date} className="text-xs font-semibold uppercase tracking-wide text-muted" />
+        <NightStatusPill status={row.status} />
+        {row.sample && <Pill>Sample data</Pill>}
       </div>
-      <h2 className="mt-2 text-2xl font-bold text-ink">{title}</h2>
-      <p className="text-sm text-muted">{formatGameDate(date, { year: true })}</p>
-      {status !== "setup" && (
+      <h2 className="mt-2 text-2xl font-bold text-ink">{row.title}</h2>
+      <TonightDate date={row.date} className="text-sm text-muted" />
+      {row.status !== "setup" && (
         <p className="mt-3 text-sm text-ink-soft">
-          <span className="text-lg font-bold tabular text-ink">{formatCents(paypalCents)}</span> in PayPal sales from{" "}
-          {paypalOrders} {paypalOrders === 1 ? "order" : "orders"}
+          <span className="text-lg font-bold tabular text-ink">{formatCents(row.paypalCents)}</span> in PayPal sales from{" "}
+          {row.paypalOrders} {row.paypalOrders === 1 ? "order" : "orders"}
         </p>
       )}
       <p className="mt-3 text-base text-ink">{step.text}</p>
       <div className="mt-4 flex flex-wrap gap-2">
         {step.action && <LinkButton href={step.action.href} size="lg">{step.action.label}</LinkButton>}
-        <LinkButton href={`/nights/${id}`} variant="secondary" size="lg">Game page</LinkButton>
+        <LinkButton href={`/nights/${row.nightId}`} variant="secondary" size="lg">Game page</LinkButton>
       </div>
     </Card>
   );

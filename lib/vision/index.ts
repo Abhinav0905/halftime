@@ -4,10 +4,13 @@
 
 import { visionConfig, type VisionProvider } from "../config";
 import { countWithGemini } from "./gemini";
+import { createRateLimiter } from "./limit";
+import { MESSAGES } from "./messages";
 import { findRecording } from "./replay";
 import type { CatalogRef, CountResult } from "./schema";
 
 export type { CountResult, CatalogRef } from "./schema";
+export { MESSAGES } from "./messages";
 
 export interface Suggestion {
   provider: VisionProvider;
@@ -17,14 +20,30 @@ export interface Suggestion {
   latencyMs?: number;
 }
 
-export const MESSAGES = {
-  failed: "The photo count did not work this time. Count by hand; the photo is still saved.",
-  noRecording: "Photo counting is not set up on this copy of Halftime, and there is no recorded count for this photo. Count by hand; the photo is still saved.",
-  manual: "Photo counting is turned off. Count by hand; the photo is still saved.",
-  recordedFallback: "The live photo count did not answer, so this is the recorded count for this photo. Check it against the table.",
-} as const;
+/** A game night needs two counts; this leaves room for plenty of retakes. */
+export const MODEL_CALLS_PER_HOUR = 12;
+/** Across all games, so creating new games can't get around the per-game limit. */
+export const MODEL_CALLS_PER_HOUR_ALL_GAMES = 60;
+const HOUR_MS = 60 * 60 * 1000;
+const perNight = createRateLimiter({ max: MODEL_CALLS_PER_HOUR, windowMs: HOUR_MS });
+const allNights = createRateLimiter({ max: MODEL_CALLS_PER_HOUR_ALL_GAMES, windowMs: HOUR_MS });
+const ALL = "all";
+
+/** Takes one model call from both limits, or neither. */
+function takeModelCall(nightId: string): boolean {
+  if (!perNight.allows(nightId) || !allNights.allows(ALL)) return false;
+  perNight.take(nightId);
+  allNights.take(ALL);
+  return true;
+}
+
+export function resetModelCallLimitsForTests(): void {
+  perNight.reset();
+  allNights.reset();
+}
 
 export async function suggestCounts(input: {
+  nightId: string;
   sha256: string;
   bytes: Buffer;
   mime: string;
@@ -41,6 +60,12 @@ export async function suggestCounts(input: {
     const rec = findRecording(input.sha256, input.catalog);
     if (!rec) return { provider: "manual", model: null, result: null, message: MESSAGES.noRecording };
     return { provider: "replay", model: rec.model, result: rec.result, latencyMs: Date.now() - started };
+  }
+
+  if (!takeModelCall(input.nightId)) {
+    const rec = findRecording(input.sha256, input.catalog);
+    if (rec) return { provider: "replay", model: rec.model, result: rec.result };
+    return { provider: "gemini", model: cfg.model, result: null, message: MESSAGES.busy };
   }
 
   try {

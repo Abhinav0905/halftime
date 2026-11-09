@@ -80,6 +80,7 @@ function cleanText(v: unknown, max: number): string | null {
  * - items whose sku is not on the menu move to `unknown`
  * - counts become integers in 0..500; boxes are clamped to the grid, malformed ones dropped
  * - every catalog sku appears exactly once, in catalog order (count 0, confidence low if the model skipped it)
+ * - the model's count is kept even when it differs from the number of boxes, but then confidence is at most medium
  * Throws if the answer is not an object with an `items` array, so the caller can fall back to counting by hand.
  */
 export function normalizeResult(raw: unknown, catalog: readonly CatalogRef[]): CountResult {
@@ -148,7 +149,14 @@ export function normalizeResult(raw: unknown, catalog: readonly CatalogRef[]): C
   }
 
   const result: CountResult = {
-    items: catalog.map((c) => found.get(c.sku) ?? { sku: c.sku, count: 0, confidence: "low", boxes: [] }),
+    items: catalog.map((c) => {
+      const item = found.get(c.sku);
+      if (!item) return { sku: c.sku, count: 0, confidence: "low", boxes: [] };
+      // Fewer boxes than the count usually means units hidden behind others; any
+      // mismatch is worth a closer look, so it is never shown as high confidence.
+      if (item.confidence === "high" && item.boxes.length !== item.count) return { ...item, confidence: "medium" };
+      return item;
+    }),
     unknown: [...unknown].slice(0, MAX_UNKNOWN).map(([label, count]) => ({ label, count })),
     quality,
   };

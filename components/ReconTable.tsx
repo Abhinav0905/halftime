@@ -1,5 +1,5 @@
-// Per-item close-out table. Cash columns stay hidden until both cash counts
-// are in, so the people counting the box are not steered by the expected total.
+// Per-item close-out table. Sold minus PayPal is the cash per item, so the
+// close page only renders this once both cash counts agree (see lib/redact.ts).
 
 import type { ItemResult } from "@/lib/engine/reconcile";
 import { formatCents } from "@/lib/money";
@@ -7,7 +7,9 @@ import { cx } from "./ui";
 
 const num = (v: number | null) => (v === null ? "—" : String(v));
 
-export function ReconTable({ lines, revealCash }: { lines: ItemResult[]; revealCash: boolean }) {
+export function ReconTable({ lines: all }: { lines: ItemResult[] }) {
+  // Items the stand never stocked tonight add only a row of zeros.
+  const lines = all.filter((l) => l.recount || (l.open ?? 0) > 0 || (l.close ?? 0) > 0 || l.paypalUnits > 0);
   const anyRecount = lines.some((l) => l.recount);
   const totals = {
     sold: lines.reduce((s, l) => s + Math.max(0, l.sold ?? 0), 0),
@@ -50,10 +52,8 @@ export function ReconTable({ lines, revealCash }: { lines: ItemResult[]; revealC
               <td className={td}>{l.waste || "—"}</td>
               <td className={cx(td, "font-semibold text-ink")}>{num(l.sold)}</td>
               <td className={td}>{l.paypalUnits}</td>
-              <td className={td}>{revealCash ? num(l.cashUnits) : <Hidden />}</td>
-              <td className={cx(td, "font-semibold text-ink")}>
-                {revealCash ? (l.cashCents === null ? "—" : formatCents(l.cashCents)) : <Hidden />}
-              </td>
+              <td className={td}>{num(l.cashUnits)}</td>
+              <td className={cx(td, "font-semibold text-ink")}>{l.cashCents === null ? "—" : formatCents(l.cashCents)}</td>
             </tr>
           ))}
         </tbody>
@@ -65,20 +65,11 @@ export function ReconTable({ lines, revealCash }: { lines: ItemResult[]; revealC
             <td className={td} />
             <td className={td}>{totals.sold}</td>
             <td className={td}>{totals.paypal}</td>
-            <td className={td}>{revealCash ? (anyRecount ? "—" : totals.cash) : <Hidden />}</td>
-            <td className={td}>{revealCash ? (anyRecount ? "—" : formatCents(totals.cashCents)) : <Hidden />}</td>
+            <td className={td}>{anyRecount ? "—" : totals.cash}</td>
+            <td className={td}>{anyRecount ? "—" : formatCents(totals.cashCents)}</td>
           </tr>
         </tfoot>
       </table>
     </div>
-  );
-}
-
-function Hidden() {
-  return (
-    <span className="text-muted" title="Shown after both cash counts are in">
-      <span aria-hidden>••</span>
-      <span className="sr-only">hidden until the cash is counted</span>
-    </span>
   );
 }

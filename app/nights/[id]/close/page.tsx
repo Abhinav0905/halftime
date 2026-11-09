@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { isCashBlind } from "@/lib/redact";
 import { getNightState } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { formatCents } from "@/lib/money";
@@ -19,7 +20,8 @@ export default async function ClosePage({ params }: { params: Promise<{ id: stri
   const { night, recon, club } = state;
   const base = `/nights/${id}`;
   const finished = night.status === "closed" || night.status === "deposited";
-  const revealed = recon.cash.status === "agree" || finished;
+  // Until two cash counts agree, nothing here may let a counter work out the expected cash (lib/redact.ts).
+  const revealed = !isCashBlind(night.status, recon.cash.status);
   const recountLines = recon.lines.filter((l) => l.recount);
   const lastCounter = state.cashCounts.at(-1)?.countedBy ?? null;
   const counters = [...new Set(state.cashCounts.map((c) => c.countedBy))];
@@ -67,62 +69,75 @@ export default async function ClosePage({ params }: { params: Promise<{ id: stri
     );
   }
 
+  // The counts route locks the closing count at the first cash count, so a recount has to come before it.
+  const cashStarted = state.cashCounts.length > 0;
+  const recountFirst = night.status === "closing" && !cashStarted && recountLines.length > 0;
+  const closers = [state.close.countedBy, state.close.checkedBy];
+
+  const recountCallout = recountLines.length > 0 && (
+    <Callout tone="warn" title={`${recountLines.length} ${recountLines.length === 1 ? "item needs" : "items need"} a recount`}>
+      <ul className="mt-1 list-disc space-y-1 pl-5">
+        {recountLines.map((l) => (
+          <li key={l.sku}>
+            <strong>{l.name}:</strong> {l.recountReason}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2">
+        PayPal&apos;s record of each paid item is exact, so a photo count that shows fewer sold than PayPal must be off.{" "}
+        {recountFirst
+          ? "Count those items on the table again before anyone counts the cash. Counting the cash locks the closing count."
+          : night.status === "closing"
+            ? "The closing count is locked because cash counting has started. Add a note about these items when you finalize the night."
+            : "The expected cash can't be worked out for these items."}
+      </p>
+      {recountFirst && (
+        <div className="mt-3">
+          <LinkButton href={`${base}/count/close`} size="lg">Recount leftovers</LinkButton>
+        </div>
+      )}
+    </Callout>
+  );
+
   return (
     <div className="space-y-5">
       {header}
 
-      <Card
-        title="Item by item"
-        aside={
-          <span className="text-xs text-muted">
-            Leftovers counted by {state.close.countedBy}, checked by {state.close.checkedBy}
-          </span>
-        }
-      >
-        <p className="mb-3 text-sm text-ink-soft">
-          Sold = opening − closing − waste. PayPal recorded exactly which items were paid digitally, so the rest must have been paid in cash.
-        </p>
-        <ReconTable lines={recon.lines} revealCash={revealed} />
-        {!revealed && (
-          <p className="mt-3 text-xs text-muted">Cash columns appear after both cash counts are in, so neither counter sees the expected amount first.</p>
-        )}
-      </Card>
+      {revealed ? (
+        <>
+          <Card
+            title="Item by item"
+            aside={
+              <span className="text-xs text-muted">
+                Leftovers counted by {state.close.countedBy}, checked by {state.close.checkedBy}
+              </span>
+            }
+          >
+            <p className="mb-3 text-sm text-ink-soft">
+              Sold = opening − closing − waste. PayPal recorded exactly which items were paid digitally, so the rest must have been paid in cash.
+            </p>
+            <ReconTable lines={recon.lines} />
+          </Card>
 
-      {recountLines.length > 0 && (
-        <Callout tone="warn" title={`${recountLines.length} ${recountLines.length === 1 ? "item needs" : "items need"} a recount`}>
-          <ul className="mt-1 list-disc space-y-1 pl-5">
-            {recountLines.map((l) => (
-              <li key={l.sku}>
-                <strong>{l.name}:</strong> {l.recountReason}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2">
-            PayPal&apos;s record of each paid item is exact, so a photo count that shows fewer sold than PayPal must be off. Count those items on the
-            table again. The expected cash can&apos;t be worked out until they are fixed.
-          </p>
-          {night.status === "closing" && (
-            <div className="mt-3">
-              <LinkButton href={`${base}/count/close`} variant="secondary">Recount leftovers</LinkButton>
-            </div>
-          )}
-        </Callout>
+          {recountCallout}
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="PayPal sales" value={formatCents(recon.paypalCents)} hint={`${recon.paypalOrders} orders`} />
+            <Stat
+              label="Expected cash sales"
+              value={recon.expectedCashSalesCents === null ? "—" : formatCents(recon.expectedCashSalesCents)}
+            />
+            <Stat label="Opening float" value={formatCents(night.floatCents)} />
+            <Stat
+              label="Expected in box"
+              value={recon.expectedBoxCents === null ? "—" : formatCents(recon.expectedBoxCents)}
+              hint="cash sales + float"
+            />
+          </div>
+        </>
+      ) : (
+        recountCallout
       )}
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="PayPal sales" value={formatCents(recon.paypalCents)} hint={`${recon.paypalOrders} orders`} />
-        <Stat
-          label="Expected cash sales"
-          value={revealed ? (recon.expectedCashSalesCents === null ? "—" : formatCents(recon.expectedCashSalesCents)) : "Hidden"}
-          hint={revealed ? undefined : "until both counts are in"}
-        />
-        <Stat label="Opening float" value={formatCents(night.floatCents)} />
-        <Stat
-          label="Expected in box"
-          value={revealed ? (recon.expectedBoxCents === null ? "—" : formatCents(recon.expectedBoxCents)) : "Hidden"}
-          hint={revealed ? "cash sales + float" : "until both counts are in"}
-        />
-      </div>
 
       <Card title="Cash box count">
         {recon.cash.status === "agree" || finished ? (
@@ -159,14 +174,20 @@ export default async function ClosePage({ params }: { params: Promise<{ id: stri
               />
             ) : (
               <Callout tone="warn">
-                The counted cash can&apos;t be compared yet because some items still need a recount.
+                The counted cash can&apos;t be compared with an expected amount because some items didn&apos;t add up.
+                {!finished && " Add a note about them when you finalize."}
               </Callout>
             )}
           </div>
         ) : night.status === "closing" ? (
           <div className="space-y-4">
+            {recountFirst && (
+              <p className="text-sm font-medium text-warn">
+                Do the recount above first. Only count the cash now if the closing count is right, because it can&apos;t change after this.
+              </p>
+            )}
             <ol className="space-y-1 text-sm text-ink-soft">
-              <li>1. One volunteer counts every bill and coin in the box and enters the total.</li>
+              <li>1. One volunteer, not either of the closing counters, counts every bill and coin in the box and enters the total.</li>
               <li>2. A second volunteer counts again without looking at the first number.</li>
               <li>3. When the two totals match, the expected amount is shown.</li>
             </ol>
@@ -177,10 +198,24 @@ export default async function ClosePage({ params }: { params: Promise<{ id: stri
                   ? `1 count in, by ${lastCounter}.`
                   : `${state.cashCounts.length} counts in. The last two are different.`}
             </p>
-            <CashCountForm nightId={id} people={state.people} status={recon.cash.status} lastCounter={lastCounter} />
+            <CashCountForm
+              nightId={id}
+              people={state.people}
+              status={recon.cash.status}
+              lastCounter={lastCounter}
+              closers={closers}
+              secondary={recountFirst}
+            />
           </div>
         ) : null}
       </Card>
+
+      {!revealed && (
+        <p className="text-sm text-muted">
+          The item-by-item table and the expected cash appear here once both cash counts are in, so neither counter sees the expected amount
+          first.
+        </p>
+      )}
 
       {night.status === "closing" && recon.cash.status === "agree" && (
         <Card title="Finalize the night">

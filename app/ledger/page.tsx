@@ -25,6 +25,7 @@ export default function LedgerPage() {
   );
   const netCash = rows.reduce((s, r) => s + (r.cashVarianceCents ?? 0), 0);
   const netDeposit = rows.reduce((s, r) => s + (r.depositVarianceCents ?? 0), 0);
+  const anyHidden = rows.some((r) => r.cashHidden);
 
   return (
     <div className="space-y-5">
@@ -74,6 +75,12 @@ export default function LedgerPage() {
       )}
 
       <LedgerGrid rows={rows} />
+      {anyHidden && (
+        <p className="text-sm text-ink-soft">
+          Hidden until both cash counts are in: a game that is still closing shows its expected cash and total sales once two
+          volunteers&apos; counts of the box match, so neither counter sees the expected amount first.
+        </p>
+      )}
       <p className="text-xs text-muted">
         Variance colors: green is within {formatCents(tolerance)}, amber within {formatCents(tolerance * 5)}, red beyond that. Rows marked Sample are demo data.
       </p>

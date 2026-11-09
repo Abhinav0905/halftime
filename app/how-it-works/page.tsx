@@ -7,8 +7,9 @@ import { Card, PageHeader } from "@/components/ui";
 
 export const metadata: Metadata = { title: "How it works" };
 
-// A made-up game using the real menu. The numbers below are computed by the
-// same reconcile() the app uses, so the page can't drift from the code.
+// A made-up game using the sample menu (the demo photos have no sports drinks;
+// this table does). The numbers are computed by the same reconcile() the app
+// uses, so the page can't drift from the code.
 const OPEN = { water: 48, sports: 24, chips: 30, candy: 36, hotdog: 40 };
 const CLOSE = { water: 20, sports: 10, chips: 12, candy: 16, hotdog: 6 };
 const WASTE = { hotdog: 2 };
@@ -50,7 +51,7 @@ export default function HowItWorksPage() {
       <Section title="In short">
         <p>
           Halftime closes out a booster club&apos;s concession stand. Volunteers count the stock at the start and end of the game, fans can pay by
-          PayPal or Venmo at a QR code, and PayPal&apos;s record of exactly which items were paid digitally tells you how much cash should be in the
+          PayPal, Venmo or card at a QR code, and PayPal&apos;s record of exactly which items were paid digitally tells you how much cash should be in the
           box.
         </p>
       </Section>
@@ -67,7 +68,7 @@ export default function HowItWorksPage() {
 
       <Section title="A worked example">
         <p>
-          Opening float {formatCents(FLOAT)}. Two hot dogs were dropped and written down as waste.
+          A made-up game on the sample menu. Opening float {formatCents(FLOAT)}. Two hot dogs were dropped and written down as waste.
         </p>
         <div className="-mx-4 overflow-x-auto sm:mx-0">
           <table className="w-full min-w-[36rem] text-sm">
@@ -116,24 +117,26 @@ export default function HowItWorksPage() {
         <ol className="space-y-3">
           <Step n={1} title="Opening count">
             Before the stand opens, a volunteer photographs the stocked table. The app suggests a count for each item, the volunteer fixes any
-            mistakes, and a second volunteer checks it. The booth QR code only opens after this.
+            mistakes, and a second volunteer checks it. The booth QR code only takes orders after this, and an item counted as zero isn&apos;t on
+            the menu that night.
           </Step>
           <Step n={2} title="Selling">
-            Fans scan the QR code, pick items and pay with PayPal or Venmo. The server prices the order from the club&apos;s menu and sends PayPal an
-            itemized order. Once PayPal confirms the payment, the window board shows a three-character pickup code. Cash sales carry on as usual.
+            Fans scan the QR code, pick items and pay with PayPal, Venmo or a card. The server prices the order from the club&apos;s menu and sends
+            PayPal an itemized order. Once PayPal confirms the payment, the window board shows a three-character pickup code. Cash sales carry on as usual.
           </Step>
           <Step n={3} title="Closing count and cash">
-            After the game, a volunteer photographs the leftovers and notes any waste; a second volunteer checks. Then two volunteers count the cash
-            box one after the other, without seeing each other&apos;s number or the expected amount. Once the counts match, the app shows expected
-            against counted, and the night is finalized.
+            After the game, a volunteer photographs the leftovers and notes any waste; a second volunteer checks. Saving this count stops the
+            buyer menu. Any item flagged for a recount is recounted now, because the closing count locks once the cash is counted. Then two other
+            volunteers count the cash box one after the other, without seeing each other&apos;s number or the expected amount. Once the counts match,
+            the app shows expected against counted, and the night is finalized. Anything still off at that point needs a note for the officers.
           </Step>
           <Step n={4} title="Deposit">
             The next day, someone who did not count the cash takes it to the bank and enters the amount on the slip. If it differs from the counted
-            cash minus the float, the officers get a notice.
+            cash minus the float by more than the {formatCents(TOLERANCE)} allowance, the officers get a notice.
           </Step>
           <Step n={5} title="Reimbursing supplies">
-            A parent who bought hot dogs or water enters the receipt. Someone else approves it, and the money goes to the parent&apos;s PayPal
-            account through PayPal Payouts.
+            A parent who bought hot dogs or water enters the receipt. An officer or the treasurer approves it, and the money goes to the
+            parent&apos;s PayPal account through PayPal Payouts.
           </Step>
         </ol>
       </Section>
@@ -153,7 +156,8 @@ export default function HowItWorksPage() {
         )}
         <p>
           <strong>Refunds stay in step.</strong> A refunded order leaves the PayPal column straight away, so its items count as unsold or as cash,
-          depending on what the closing count shows.
+          depending on what the closing count shows. A refund made after the night is closed sends the officers a notice with the new expected
+          cash.
         </p>
       </Section>
 
@@ -183,8 +187,12 @@ export default function HowItWorksPage() {
         <ul className="list-disc space-y-1 pl-5">
           <li>Each stock count is made by one volunteer and checked by a different one.</li>
           <li>The cash box is counted twice, by two different people, blind.</li>
+          <li>
+            The two people who counted and checked the leftovers can&apos;t count the cash, because the leftovers give away how much should be in
+            the box.
+          </li>
           <li>The person who makes the deposit can&apos;t be one of the cash counters.</li>
-          <li>A reimbursement is approved by someone other than the person asking for it.</li>
+          <li>A reimbursement is approved by an officer or the treasurer, never by the person asking for it.</li>
           <li>Differences go to the officers as notices. A notice says which numbers disagree; it doesn&apos;t say why.</li>
         </ul>
       </Section>
@@ -192,7 +200,10 @@ export default function HowItWorksPage() {
       <Section title="Limits of this prototype">
         <ul className="list-disc space-y-1 pl-5">
           <li>It runs against the PayPal sandbox only. No real money moves.</li>
-          <li>There is no sign-in yet. Volunteers pick their names from the roster, so the rules above rely on people choosing honestly.</li>
+          <li>
+            There are no personal sign-ins yet. An optional shared staff PIN keeps fans out of the staff screens, and volunteers pick their
+            names from the roster, so the rules above rely on people choosing honestly.
+          </li>
           <li>Photo counts need a flat, well-lit table with items side by side, not stacked. Foil-wrapped items are the hardest to count.</li>
           <li>Free items, like hot dogs for the referees, show up as a difference unless they are written down as waste.</li>
         </ul>

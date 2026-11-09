@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NightState, NightStatus, OrderRow } from "@/lib/repo";
+import type { ClientNightState, ClientOrder } from "@/lib/redact";
+import type { NightStatus } from "@/lib/repo";
 import type { NightEvent } from "@/lib/events";
 import { getJson } from "./api";
 import { LocalTime } from "./LocalTime";
@@ -29,7 +30,7 @@ export function WindowBoard({
   nightId: string;
   title: string;
   initialStatus: NightStatus;
-  initialOrders: OrderRow[];
+  initialOrders: ClientOrder[];
 }) {
   const [orders, setOrders] = useState(initialOrders);
   const [status, setStatus] = useState(initialStatus);
@@ -77,7 +78,7 @@ export function WindowBoard({
   }, []);
 
   const reload = useCallback(async () => {
-    const res = await getJson<NightState>(`/api/nights/${encodeURIComponent(nightId)}`);
+    const res = await getJson<ClientNightState>(`/api/nights/${encodeURIComponent(nightId)}`);
     if (!res.ok) {
       setLoadError(true);
       return;
@@ -223,7 +224,7 @@ function ConnectionBadge({ conn, error }: { conn: Conn; error: boolean }) {
   );
 }
 
-function OrderCard({ order, handed, flashing, onToggle }: { order: OrderRow; handed: boolean; flashing: boolean; onToggle: () => void }) {
+function OrderCard({ order, handed, flashing, onToggle }: { order: ClientOrder; handed: boolean; flashing: boolean; onToggle: () => void }) {
   const refunded = order.status === "REFUNDED";
   const muted = handed || refunded;
   const via = fundingLabel(order);

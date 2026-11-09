@@ -12,17 +12,23 @@ import { Callout, Field, buttonClass, inputClass } from "./ui";
 /**
  * Blind cash count. The form never shows the expected amount or anyone
  * else's count; the server page only reveals them once two counts agree.
+ * The two who did the closing count are left out of the name list.
  */
 export function CashCountForm({
   nightId,
   people,
   status,
   lastCounter,
+  closers,
+  secondary = false,
 }: {
   nightId: string;
   people: Person[];
   status: Exclude<CashStatus, "agree">;
   lastCounter: string | null;
+  closers: string[];
+  /** A recount is waiting, so saving a cash count is not the main action on the page. */
+  secondary?: boolean;
 }) {
   const router = useRouter();
   const [countedBy, setCountedBy] = useState("");
@@ -75,8 +81,11 @@ export function CashCountForm({
         people={people}
         value={countedBy}
         onChange={setCountedBy}
-        exclude={lastCounter ? [lastCounter] : []}
-        hint={lastCounter ? `${lastCounter} counted last, so someone else counts now.` : undefined}
+        exclude={lastCounter ? [lastCounter, ...closers] : closers}
+        hint={[
+          closers.length ? `${closers.join(" and ")} did the closing count, so they don't count the cash.` : null,
+          lastCounter ? `${lastCounter} counted last, so someone else counts now.` : null,
+        ].filter(Boolean).join(" ") || undefined}
       />
       <Field label="Total cash in the box, including the float" hint="Count every bill and coin. You will not see the expected amount until both counts are in.">
         <div className="relative">
@@ -92,7 +101,7 @@ export function CashCountForm({
         </div>
       </Field>
       {error && <p role="alert" className="text-sm font-medium text-bad">{error}</p>}
-      <button type="submit" className={`${buttonClass("primary", "lg")} w-full sm:w-auto`} disabled={busy}>
+      <button type="submit" className={`${buttonClass(secondary ? "secondary" : "primary", "lg")} w-full sm:w-auto`} disabled={busy}>
         {busy ? "Saving…" : "Save my count"}
       </button>
     </form>

@@ -22,3 +22,9 @@ services:
         value: gemini-3.5-flash
       - key: HALFTIME_DB
         value: ./data/halftime.db
+      # Shared staff PIN for every page except the buyer menu and payments (see SECURITY.md).
+      - key: STAFF_PIN
+        sync: false
+      # The hosted demo keeps "Reset demo data" (staff only, behind the PIN). Set to "false" for a real club.
+      - key: DEMO_RESET_ENABLED
+        value: "true"

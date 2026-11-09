@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getClub, getNight, listItems } from "@/lib/repo";
+import { getClub, getCounts, getNight, listItems } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { paypalConfig, paypalConfigured } from "@/lib/config";
 import { MAX_UNITS_PER_LINE } from "@/lib/paypal/payload";
@@ -23,7 +23,11 @@ export default async function MenuPage({
   const night = getNight(id);
   if (!night) notFound();
   const club = getClub();
-  const items = listItems().map((i) => ({ sku: i.sku, name: i.name, priceCents: i.priceCents }));
+  // Only offer what was on the table at the opening count.
+  const open = getCounts(night.id).open;
+  const items = listItems()
+    .filter((i) => !open || (open.counts[i.sku] ?? 0) > 0)
+    .map((i) => ({ sku: i.sku, name: i.name, priceCents: i.priceCents }));
 
   return (
     <BuyerMenu

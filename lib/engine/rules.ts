@@ -1,5 +1,7 @@
 // Separation of duties. Each check returns an error message for the volunteer,
 // or null when the action is allowed. Kept pure so the API and tests share it.
+// Routes pass roster spellings (lib/roster.ts); samePerson still normalizes so
+// names saved before the roster check compare the same way.
 
 import { samePerson } from "./reconcile";
 
@@ -14,6 +16,15 @@ export function checkCashCounter(countedBy: string, previous: { countedBy: strin
   const last = previous[previous.length - 1];
   if (last && samePerson(last.countedBy, countedBy)) {
     return "The next cash count has to be done by a different volunteer.";
+  }
+  return null;
+}
+
+/** The two who did the closing count could work out the expected cash, so neither counts the box. */
+export function checkCashCounterNotCloser(countedBy: string, close: { countedBy: string; checkedBy: string } | null): string | null {
+  if (!close) return null;
+  if (samePerson(close.countedBy, countedBy) || samePerson(close.checkedBy, countedBy)) {
+    return "The two volunteers who did the closing count can't count the cash. Ask someone else to count it.";
   }
   return null;
 }

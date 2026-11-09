@@ -15,6 +15,7 @@
     "test": "vitest run",
     "seed": "tsx scripts/seed.ts",
     "eval": "tsx scripts/eval-vision.ts",
+    "demo:record": "tsx scripts/record-demo.ts",
     "webhook:register": "tsx scripts/register-webhook.ts"
   },
   "dependencies": {

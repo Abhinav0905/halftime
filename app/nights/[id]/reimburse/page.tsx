@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getNightState } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { formatCents } from "@/lib/money";
+import { payoutUnconfirmed } from "@/lib/payout-state";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { ReimbursementCard, ReimbursementRequestForm } from "@/components/Reimbursements";
 import { Card, PageHeader, Pill } from "@/components/ui";
@@ -26,7 +27,7 @@ export default async function ReimbursePage({ params }: { params: Promise<{ id: 
           <span className="flex flex-wrap items-center gap-2">
             <span>A parent who bought supplies is repaid with PayPal after a second person approves.</span>
             {night.sample && <Pill>Sample data</Pill>}
-            {reimbursements.some((r) => r.status === "sent") && <LiveRefresh nightId={id} />}
+            {reimbursements.some((r) => r.status === "sent" || payoutUnconfirmed(r)) && <LiveRefresh nightId={id} />}
           </span>
         }
       />

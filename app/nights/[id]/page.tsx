@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getNightState, listAudit, type NightState } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { formatCents } from "@/lib/money";
+import { payoutInFlight, payoutUnconfirmed } from "@/lib/payout-state";
 import { AuditTrail } from "@/components/AuditTrail";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { LocalTime } from "@/components/LocalTime";
@@ -11,7 +12,7 @@ import { OrderList } from "@/components/OrderList";
 import { QrCode } from "@/components/QrCode";
 import { formatGameDate } from "@/components/format";
 import { nextStep } from "@/components/nextStep";
-import { requestBaseUrl } from "@/components/requestBaseUrl";
+import { isLocalOnlyUrl, requestBaseUrl } from "@/components/requestBaseUrl";
 import { Callout, Card, LinkButton, NightStatusPill, PageHeader, Pill, Stat, Variance, bandTone } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,8 @@ export default async function NightPage({ params }: { params: Promise<{ id: stri
   const selling = night.status === "selling";
   const menuUrl = `${await requestBaseUrl()}/m/${encodeURIComponent(id)}`;
   const live = night.status === "selling" || night.status === "closing";
+  // A payout PayPal is still working on updates this page when its webhook arrives.
+  const watch = live || state.reimbursements.some(payoutInFlight);
 
   return (
     <div className="space-y-5">
@@ -37,7 +40,7 @@ export default async function NightPage({ params }: { params: Promise<{ id: stri
             <span>{formatGameDate(night.date, { year: true })}</span>
             <NightStatusPill status={night.status} />
             {night.sample && <Pill>Sample data</Pill>}
-            {live && <LiveRefresh nightId={id} />}
+            {watch && <LiveRefresh nightId={id} />}
           </span>
         }
       />
@@ -68,6 +71,14 @@ export default async function NightPage({ params }: { params: Promise<{ id: stri
             </div>
             <p className="mt-3 text-center text-sm text-ink-soft">Fans scan this to order and pay with PayPal or Venmo.</p>
             <p className="mt-1 break-all text-center font-mono text-xs text-muted">{menuUrl}</p>
+            {isLocalOnlyUrl(menuUrl) && (
+              <div className="mt-3">
+                <Callout tone="warn" title="Phones can't open this address">
+                  It points at this computer itself. Open this page using the computer&apos;s Wi-Fi address (for example
+                  http://192.168.1.20:3000), or set PUBLIC_BASE_URL to that address in .env.local and restart.
+                </Callout>
+              </div>
+            )}
             <div className="mt-3 flex justify-center">
               <Link href={`/m/${id}`} className="text-sm font-medium text-brand hover:underline" target="_blank">
                 Open the menu on this device
@@ -149,7 +160,8 @@ function SalesStats({ state }: { state: NightState }) {
 
 function ReimbursementSummary({ state }: { state: NightState }) {
   const list = state.reimbursements;
-  const waiting = list.filter((r) => r.status === "requested");
+  const onPayPal = list.filter(payoutUnconfirmed);
+  const waiting = list.filter((r) => r.status === "requested" && !payoutUnconfirmed(r));
   const sent = list.filter((r) => r.status === "sent");
   const total = list.reduce((s, r) => s + r.cents, 0);
   return (
@@ -161,6 +173,7 @@ function ReimbursementSummary({ state }: { state: NightState }) {
           </p>
           <div className="flex flex-wrap gap-2">
             {waiting.length > 0 && <Pill tone="warn">{waiting.length} waiting for approval</Pill>}
+            {onPayPal.length > 0 && <Pill tone="warn">{onPayPal.length} waiting on PayPal</Pill>}
             {sent.length > 0 && <Pill tone="ok">{sent.length} sent with PayPal</Pill>}
             {list.some((r) => r.status === "failed") && <Pill tone="bad">Payout failed</Pill>}
           </div>

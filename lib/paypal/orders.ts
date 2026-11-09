@@ -1,13 +1,13 @@
 // Orders v2 and refunds through the PayPal Server SDK. Every function returns a
 // small plain object so route handlers never touch SDK response types.
 
-import type { Order, OrdersCapture, Refund } from "@paypal/paypal-server-sdk";
+import type { CapturedPayment, Order, OrdersCapture, Refund } from "@paypal/paypal-server-sdk";
 import { publish } from "../events";
-import { valueToCents } from "../money";
-import { lateRefundNotice } from "../notice-text";
+import { formatCents, valueToCents } from "../money";
+import { gameName, lateCaptureNotice, lateRefundNotice, type NoticeDraft } from "../notice-text";
 import {
-  addNotice, audit, getNight, getOrder as getOrderRow, listItems, markOrderCompleted, markOrderRefunded,
-  type Item, type OrderItem,
+  addNotice, audit, getNight, getOrder as getOrderRow, listItems, markOrderCompleted, markOrderRefunded, reconcileNight,
+  type Item, type Night, type OrderItem, type OrderRow,
 } from "../repo";
 import { paypal, toPayPalError } from "./client";
 import { linesFromPayPalItems, type BuiltOrder } from "./payload";
@@ -33,10 +33,17 @@ export interface PayPalOrderView {
   funding: Funding;
 }
 
+// After a decline and a retry an order can carry more than one capture. The one
+// that took money matters, whether or not it has been refunded since.
+const CAPTURE_PREFERENCE = ["COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "PENDING"];
+
 function pickCapture(captures: OrdersCapture[] | undefined): OrdersCapture | null {
   if (!captures?.length) return null;
-  // After a decline and a retry an order can carry more than one capture.
-  return captures.find((c) => c.status === "COMPLETED") ?? captures[captures.length - 1] ?? null;
+  for (const status of CAPTURE_PREFERENCE) {
+    const found = captures.find((c) => c.status === status);
+    if (found) return found;
+  }
+  return captures[captures.length - 1] ?? null;
 }
 
 function fundingOf(order: Order): Funding {
@@ -113,6 +120,33 @@ export async function getOrder(id: string, catalog: Item[] = listItems()): Promi
   }
 }
 
+export interface CaptureView {
+  id: string;
+  /** COMPLETED, PENDING, PARTIALLY_REFUNDED, REFUNDED, DECLINED or FAILED. */
+  status: string | null;
+  orderId: string | null;
+  cents: number | null;
+}
+
+export function viewCapture(capture: CapturedPayment): CaptureView {
+  return {
+    id: capture.id ?? "",
+    status: capture.status ?? null,
+    orderId: capture.supplementaryData?.relatedIds?.orderId ?? null,
+    cents: cents(capture.amount?.value),
+  };
+}
+
+/** One capture as PayPal sees it now, including whether refunds have used up its whole amount. */
+export async function getCapture(captureId: string): Promise<CaptureView> {
+  try {
+    const { result } = await paypal().payments.getCapturedPayment({ captureId });
+    return viewCapture(result);
+  } catch (err) {
+    throw toPayPalError(err);
+  }
+}
+
 /** Full refund of one capture. Keyed on our order id so a double-clicked refund only refunds once. */
 export async function refundCapture(captureId: string, orderId: string): Promise<{ id: string; status: string; cents: number | null }> {
   let refund: Refund;
@@ -134,28 +168,60 @@ export async function refundCapture(captureId: string, orderId: string): Promise
 // the row and writes it without awaiting in between, so whichever path arrives
 // second sees the first one's write and does not announce the change twice.
 
-/** Store a completed capture from PayPal's view of the order. Returns true if the order was newly marked paid. */
+function sameLines(a: OrderItem[], b: OrderItem[]): boolean {
+  const key = (lines: OrderItem[]) =>
+    JSON.stringify([...lines].sort((x, y) => x.sku.localeCompare(y.sku)).map((l) => [l.sku, l.quantity, l.unitCents]));
+  return key(a) === key(b);
+}
+
+function describeLines(lines: OrderItem[]): string {
+  return lines.length ? lines.map((l) => `${l.quantity} × ${l.name}`).join(", ") : "no items listed";
+}
+
+function mismatchNotice(night: Night, priced: OrderRow, paid: { items: OrderItem[]; totalCents: number }): NoticeDraft {
+  return {
+    level: "amber",
+    title: `PayPal order ${priced.code} does not match what the menu priced`,
+    body:
+      `The menu priced order ${priced.code} from ${gameName(night)} at ${formatCents(priced.totalCents)} (${describeLines(priced.items)}). ` +
+      `PayPal recorded ${formatCents(paid.totalCents)} (${describeLines(paid.items)}). ` +
+      `The night counts PayPal's numbers, because that is the money that came in. ` +
+      `Please compare the order in the PayPal dashboard with what was handed over at the window.`,
+  };
+}
+
+/**
+ * Store a capture PayPal completed, using PayPal's view of the order. Returns true if the order was newly marked paid.
+ * PayPal's items and amount are recorded even when they differ from what we priced, since they are the money that
+ * actually moved; a difference, or a capture that lands after selling ended, files a notice for the officers.
+ */
 export function recordCapture(orderId: string, view: PayPalOrderView, actor: string): boolean {
   const row = getOrderRow(orderId);
   if (!row || row.status === "COMPLETED" || row.status === "REFUNDED") return false;
-  const totalCents = view.totalCents ?? row.totalCents;
-  // We priced the order ourselves when we created it; PayPal's numbers should match exactly.
-  const captured = view.captureCents ?? totalCents;
-  if (captured !== row.totalCents || totalCents !== row.totalCents) {
-    audit(row.nightId, actor, "order.amount_mismatch", {
-      orderId, createdCents: row.totalCents, paypalOrderCents: totalCents, capturedCents: captured,
-    });
-  }
+  const items = view.items.length ? view.items : row.items;
+  const totalCents = view.captureCents ?? view.totalCents ?? row.totalCents;
   if (!view.items.length) audit(row.nightId, actor, "order.items_missing", { orderId });
   markOrderCompleted(orderId, {
     captureId: view.captureId ?? row.captureId ?? "",
-    items: view.items.length ? view.items : row.items,
+    items,
     totalCents,
     payer: view.payer,
     funding: view.funding,
   });
   audit(row.nightId, actor, "order.paid", { orderId, code: row.code, captureId: view.captureId, totalCents, funding: view.funding });
   publish(row.nightId, { type: "order.paid", orderId, code: row.code });
+
+  const night = getNight(row.nightId);
+  if (totalCents !== row.totalCents || !sameLines(items, row.items)) {
+    audit(row.nightId, actor, "order.amount_mismatch", {
+      orderId, createdCents: row.totalCents, paypalOrderCents: view.totalCents, capturedCents: view.captureCents,
+      createdItems: row.items, paypalItems: items,
+    });
+    if (night) addNotice({ nightId: night.id, ...mismatchNotice(night, row, { items, totalCents }) });
+  }
+  if (night && night.status !== "selling") {
+    addNotice({ nightId: night.id, ...lateCaptureNotice(night, { ...row, items, totalCents }) });
+  }
   return true;
 }
 
@@ -163,12 +229,14 @@ export function recordCapture(orderId: string, view: PayPalOrderView, actor: str
 export function recordRefund(orderId: string, refundId: string, actor: string): boolean {
   const row = getOrderRow(orderId);
   if (!row || row.status !== "COMPLETED") return false;
+  const night = getNight(row.nightId);
+  // After close-out the notice says how the night's expected cash moved, so keep the numbers from before.
+  const before = night && (night.status === "closed" || night.status === "deposited") ? reconcileNight(night) : null;
   markOrderRefunded(orderId, refundId);
   audit(row.nightId, actor, "order.refunded", { orderId, code: row.code, refundId, totalCents: row.totalCents });
   publish(row.nightId, { type: "order.refunded", orderId, code: row.code });
-  const night = getNight(row.nightId);
-  if (night && (night.status === "closed" || night.status === "deposited")) {
-    addNotice({ nightId: night.id, ...lateRefundNotice(night, row) });
+  if (night && before) {
+    addNotice({ nightId: night.id, ...lateRefundNotice(night, row, { before, after: reconcileNight(night) }) });
   }
   return true;
 }

@@ -11,8 +11,9 @@ export const GET = handle(async (req: Request, ctx: { params: Promise<{ sha: str
 
   const etag = `"${sha256}"`;
   const cache = {
-    // The URL is the content hash, so the bytes behind it never change.
-    "cache-control": "public, max-age=31536000, immutable",
+    // The URL is the content hash, so the bytes behind it never change. Private: photos are for
+    // staff only, so shared caches and CDNs must not keep a copy.
+    "cache-control": "private, max-age=31536000, immutable",
     etag,
   };
   if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: cache });

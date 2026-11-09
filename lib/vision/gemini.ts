@@ -13,7 +13,6 @@ export interface GeminiCount {
   result: CountResult;
   model: string;
   latencyMs: number;
-  usage: { promptTokens: number | null; outputTokens: number | null; thoughtTokens: number | null };
 }
 
 /** OpenAPI-subset schema Gemini uses to constrain its JSON output to CountResult. */
@@ -58,7 +57,6 @@ export function countResponseSchema(skus: readonly string[]) {
 interface GeminiResponse {
   candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
   error?: { message?: string; status?: string };
 }
 
@@ -139,15 +137,5 @@ export async function countWithGemini(input: {
     throw new VisionError((err as Error).message);
   }
 
-  const u = payload.usageMetadata;
-  return {
-    result,
-    model,
-    latencyMs,
-    usage: {
-      promptTokens: u?.promptTokenCount ?? null,
-      outputTokens: u?.candidatesTokenCount ?? null,
-      thoughtTokens: u?.thoughtsTokenCount ?? null,
-    },
-  };
+  return { result, model, latencyMs };
 }

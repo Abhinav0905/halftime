@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { redactOrder } from "@/lib/redact";
 import { getNightState } from "@/lib/repo";
 import { ensureSeeded } from "@/lib/seed";
 import { WindowBoard } from "@/components/WindowBoard";
@@ -13,5 +14,6 @@ export default async function BoardPage({ params }: { params: Promise<{ id: stri
   ensureSeeded();
   const state = getNightState(id);
   if (!state) notFound();
-  return <WindowBoard nightId={id} title={state.night.title} initialStatus={state.night.status} initialOrders={state.orders} />;
+  // The board is a client component, so buyer emails and capture ids are left out of what it receives.
+  return <WindowBoard nightId={id} title={state.night.title} initialStatus={state.night.status} initialOrders={state.orders.map(redactOrder)} />;
 }

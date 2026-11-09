@@ -1,12 +1,11 @@
-// Replay mode: recorded model answers for the bundled demo photos, keyed by the
-// photo's SHA-256. Lets the app (and CI) run the full count flow with no API key.
-// Recordings are written by `npm run eval -- --record`.
+// Replay mode: recorded model answers keyed by the photo's SHA-256, so the count
+// flow can show a real suggestion with no API key. The demo photos in public/demo/
+// are recorded with `npm run demo:record`; eval photos with `npm run eval -- --record`.
 
 import fs from "node:fs";
 import path from "node:path";
+import { SHA256_RE } from "../sha256";
 import { normalizeResult, type CatalogRef, type CountResult } from "./schema";
-
-export const SHA256_RE = /^[0-9a-f]{64}$/;
 
 export interface Recording {
   sha256: string;

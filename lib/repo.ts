@@ -2,7 +2,8 @@
 
 import { db, nowIso, tx } from "./db";
 import { newId } from "./ids";
-import { reconcile, type Counts, type ReconcileResult } from "./engine/reconcile";
+import { reconcile, type CashStatus, type Counts, type ReconcileResult } from "./engine/reconcile";
+import { isCashBlind } from "./redact";
 
 // ---------- types ----------
 
@@ -326,12 +327,6 @@ export function insertWebhookEvent(e: { id: string; type: string; resourceId: st
   return Number(res.changes) > 0;
 }
 
-/** A copy stored unverified can be applied once a later delivery of it verifies. True if it was promoted. */
-export function promoteWebhookEvent(id: string, raw: string): boolean {
-  const res = db().prepare("UPDATE webhook_event SET verified = 1, raw = ? WHERE id = ? AND verified = 0").run(raw, id);
-  return Number(res.changes) > 0;
-}
-
 /** Forget an event whose handling failed, so PayPal's retry is processed instead of skipped as a duplicate. */
 export function deleteWebhookEvent(id: string): void {
   db().prepare("DELETE FROM webhook_event WHERE id = ?").run(id);
@@ -402,7 +397,9 @@ export interface LedgerRow {
   paypalCents: number; paypalOrders: number; expectedCashSalesCents: number | null; expectedBoxCents: number | null;
   countedCents: number | null; floatCents: number; cashVarianceCents: number | null; cashBand: string | null;
   depositCents: number | null; depositVarianceCents: number | null; depositBand: string | null;
-  totalSalesCents: number | null; recountSkus: string[];
+  totalSalesCents: number | null; recountSkus: string[]; cashStatus: CashStatus;
+  /** The night is closing and the two cash counts don't agree yet, so the expected cash and totals are null. */
+  cashHidden: boolean;
 }
 
 export function getLedger(): LedgerRow[] {
@@ -410,13 +407,15 @@ export function getLedger(): LedgerRow[] {
   const items = listItems();
   return listNights().map((night) => {
     const r = reconcileNight(night, club, items);
+    // The season page is open to every volunteer, including the two counting the box.
+    const hidden = isCashBlind(night.status, r.cash.status);
     return {
       nightId: night.id, date: night.date, title: night.title, status: night.status, sample: night.sample,
-      paypalCents: r.paypalCents, paypalOrders: r.paypalOrders, expectedCashSalesCents: r.expectedCashSalesCents,
-      expectedBoxCents: r.expectedBoxCents, countedCents: r.cash.countedCents, floatCents: night.floatCents,
+      paypalCents: r.paypalCents, paypalOrders: r.paypalOrders, expectedCashSalesCents: hidden ? null : r.expectedCashSalesCents,
+      expectedBoxCents: hidden ? null : r.expectedBoxCents, countedCents: r.cash.countedCents, floatCents: night.floatCents,
       cashVarianceCents: r.cashVarianceCents, cashBand: r.cashBand, depositCents: r.depositCents,
-      depositVarianceCents: r.depositVarianceCents, depositBand: r.depositBand, totalSalesCents: r.totalSalesCents,
-      recountSkus: r.recountSkus,
+      depositVarianceCents: r.depositVarianceCents, depositBand: r.depositBand, totalSalesCents: hidden ? null : r.totalSalesCents,
+      recountSkus: r.recountSkus, cashStatus: r.cash.status, cashHidden: hidden,
     };
   });
 }

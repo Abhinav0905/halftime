@@ -28,6 +28,7 @@ interface GridRow {
   title: string;
   sample: boolean;
   status: string;
+  cashHidden: boolean;
   paypal: number | null;
   expectedCash: number | null;
   counted: number | null;
@@ -52,6 +53,9 @@ const dollars = (cents: number | null) => (cents === null ? null : cents / 100);
 const money = (p: ValueFormatterParams<GridRow, number | null>) => (p.value === null || p.value === undefined ? "—" : formatCents(Math.round(p.value * 100)));
 const variance = (p: ValueFormatterParams<GridRow, number | null>) =>
   p.value === null || p.value === undefined ? "—" : formatVariance(Math.round(p.value * 100));
+// While a game's cash count is blind these columns say so instead of a dash, so nobody reads "—" as zero.
+const HIDDEN = "Hidden";
+const hiddenMoney = (p: ValueFormatterParams<GridRow, number | null>) => (p.data?.cashHidden ? HIDDEN : money(p));
 
 function bandRules(field: "cashBand" | "depositBand") {
   return {
@@ -69,6 +73,7 @@ function toGridRow(r: LedgerRow): GridRow {
     title: r.title,
     sample: r.sample,
     status: STATUS_TEXT[r.status] ?? r.status,
+    cashHidden: r.cashHidden,
     paypal: dollars(r.paypalCents),
     expectedCash: dollars(r.expectedCashSalesCents),
     counted: dollars(r.countedCents),
@@ -103,6 +108,7 @@ export function LedgerGrid({ rows }: { rows: LedgerRow[] }) {
         title: "Season total",
         sample: false,
         status: `${data.length} ${data.length === 1 ? "game" : "games"}`,
+        cashHidden: false,
         paypal,
         expectedCash: sum(data, "expectedCash"),
         counted: sum(data, "counted"),
@@ -142,7 +148,7 @@ export function LedgerGrid({ rows }: { rows: LedgerRow[] }) {
       },
       { field: "status", headerName: "Status", width: 150, filter: "agTextColumnFilter" },
       { field: "paypal", headerName: "PayPal sales", width: 135, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: money },
-      { field: "expectedCash", headerName: "Expected cash", width: 140, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: money },
+      { field: "expectedCash", headerName: "Expected cash", width: 140, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: hiddenMoney },
       { field: "counted", headerName: "Counted", width: 120, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: money },
       {
         field: "cashVariance",
@@ -163,14 +169,14 @@ export function LedgerGrid({ rows }: { rows: LedgerRow[] }) {
         valueFormatter: variance,
         cellClassRules: bandRules("depositBand"),
       },
-      { field: "total", headerName: "Total sales", width: 130, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: money },
+      { field: "total", headerName: "Total sales", width: 130, type: "rightAligned", filter: "agNumberColumnFilter", valueFormatter: hiddenMoney },
       {
         field: "paypalShare",
         headerName: "PayPal share",
         width: 130,
         type: "rightAligned",
         filter: "agNumberColumnFilter",
-        valueFormatter: (p) => (p.value === null || p.value === undefined ? "—" : `${p.value}%`),
+        valueFormatter: (p) => (p.data?.cashHidden ? HIDDEN : p.value === null || p.value === undefined ? "—" : `${p.value}%`),
       },
     ],
     [],

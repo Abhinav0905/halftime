@@ -16,7 +16,14 @@ export interface OverlayItem {
   sku: string;
   name: string;
   color: string;
+  /** The suggested count. It can differ from boxes.length when some units are hidden. */
+  count: number;
   boxes: Box[];
+}
+
+/** Chip text after the item name: the count, plus how many are boxed when that differs. */
+export function chipCount(item: Pick<OverlayItem, "count" | "boxes">): string {
+  return item.boxes.length === item.count ? String(item.count) : `${item.count} (${item.boxes.length} boxed)`;
 }
 
 function pct(v: number): string {
@@ -26,7 +33,7 @@ function pct(v: number): string {
 export function BoxOverlay({
   src,
   items,
-  alt = "Photo of the table with a numbered box on each counted item",
+  alt = "Photo of the table with numbered boxes on the items the photo count found",
   highlight: controlled,
   onHighlight,
 }: {
@@ -102,7 +109,7 @@ export function BoxOverlay({
             >
               <span className="h-3 w-3 shrink-0 rounded-sm" style={{ backgroundColor: item.color }} />
               {item.name}
-              <span className={cx("tabular", on ? "text-white/80" : "text-muted")}>{item.boxes.length}</span>
+              <span className={cx("tabular", on ? "text-white/80" : "text-muted")}>{chipCount(item)}</span>
             </button>
           );
         })}

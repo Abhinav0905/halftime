@@ -1,11 +1,13 @@
 // Demo data: one club, its volunteers, a five-item menu and three sample games
 // from earlier in the season. Sample games use recorded (simulated) orders and
-// are labelled "sample" everywhere they appear. Tonight's game is always live.
+// are labelled "sample" everywhere they appear, including their notices. No live
+// game is seeded: volunteers start tonight's game from the home page.
 
 import { db, tx } from "./db";
+import { cashVarianceNotice, depositVarianceNotice, type NoticeDraft } from "./notice-text";
 import {
-  addCashCount, addNotice, createNight, insertOrder, markOrderCompleted, markOrderRefunded, saveCount, saveDeposit, setNightStatus,
-  type OrderItem,
+  addCashCount, addNotice, createNight, getNight, insertOrder, markOrderCompleted, markOrderRefunded, reconcileNight, saveCount,
+  saveDeposit, setNightStatus, type Night, type OrderItem,
 } from "./repo";
 
 export const CLUB_NAME = "Lincoln High Band Boosters";
@@ -54,10 +56,18 @@ const SAMPLE_GAMES: SampleGame[] = [
     open: { water: 60, sports: 24, chips: 36, candy: 36, hotdog: 48 }, paypalOrders: 31, refunds: 0, boxDeltaCents: 0, depositDeltaCents: -2700 },
 ];
 
+// Each sample game follows the same rules as a live one: the closing count, the
+// two cash counts, the finalize and the deposit are all done by different people.
+const OPEN_COUNT = { countedBy: "Marcus Hill", checkedBy: "Priya Shah" };
+const CLOSE_COUNT = { countedBy: "Jordan Lee", checkedBy: "Marcus Hill" };
+const CASH_COUNTERS = ["Priya Shah", "Pat Okafor"] as const;
+const CLOSED_BY = "Sam Ortiz";
+const DEPOSITOR = "Dana Reyes";
+
 function seedGame(g: SampleGame): void {
   const rand = rng(g.seed);
   createNight({ id: g.id, title: g.title, date: g.date, floatCents: g.floatCents, sample: true });
-  saveCount({ nightId: g.id, kind: "open", counts: g.open, countedBy: "Marcus Hill", checkedBy: "Priya Shah" });
+  saveCount({ nightId: g.id, kind: "open", counts: g.open, ...OPEN_COUNT });
 
   const remaining: Record<string, number> = { ...g.open };
   const paypalUnits: Record<string, number> = {};
@@ -93,23 +103,22 @@ function seedGame(g: SampleGame): void {
     close[item.sku] = left - Math.max(0, cashUnits);
     cashSales += Math.max(0, cashUnits) * item.priceCents;
   }
-  saveCount({ nightId: g.id, kind: "close", counts: close, waste: {}, countedBy: "Jordan Lee", checkedBy: "Marcus Hill" });
+  saveCount({ nightId: g.id, kind: "close", counts: close, waste: {}, ...CLOSE_COUNT });
 
   const box = cashSales + g.floatCents + g.boxDeltaCents;
-  addCashCount(g.id, "Jordan Lee", box);
-  addCashCount(g.id, "Priya Shah", box);
+  for (const who of CASH_COUNTERS) addCashCount(g.id, who, box);
   setNightStatus(g.id, "closed");
-  saveDeposit({ nightId: g.id, depositor: "Dana Reyes", cents: box - g.floatCents + g.depositDeltaCents });
+  fileSampleNotice(g.id, (night) => cashVarianceNotice(night, reconcileNight(night), CLOSED_BY));
+  saveDeposit({ nightId: g.id, depositor: DEPOSITOR, cents: box - g.floatCents + g.depositDeltaCents });
   setNightStatus(g.id, "deposited");
+  fileSampleNotice(g.id, (night) => depositVarianceNotice(night, reconcileNight(night), DEPOSITOR));
+}
 
-  if (g.depositDeltaCents !== 0) {
-    addNotice({
-      nightId: g.id,
-      level: "red",
-      title: `Deposit differs from counted cash by $${(Math.abs(g.depositDeltaCents) / 100).toFixed(2)}`,
-      body: `${g.title} (${g.date}): two volunteers counted the cash box after the game, and the bank deposit recorded the next day is $${(Math.abs(g.depositDeltaCents) / 100).toFixed(2)} ${g.depositDeltaCents < 0 ? "lower" : "higher"} than that count minus the float. Please compare the deposit slip with the count sheet. This is a sample notice.`,
-    });
-  }
+/** File the same notice the finalize and deposit routes would, marked as sample data. */
+function fileSampleNotice(nightId: string, draft: (night: Night) => NoticeDraft | null): void {
+  const night = getNight(nightId);
+  const notice = night ? draft(night) : null;
+  if (notice) addNotice({ nightId, ...notice, body: `${notice.body} This is a sample notice.` });
 }
 
 export function seedDemo(force = false): void {

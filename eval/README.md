@@ -9,7 +9,7 @@ The only model in Halftime suggests item counts from a photo of the table. A vol
 | `photos/` | Your test photos. Not committed (see `photos/README.md`). |
 | `labels.example.json` | The label format. Copy it to `labels.json` and fill in your own counts. |
 | `labels.json` | Hand counts for each photo: `{ "<file>": { "<sku>": count } }`. Any item you leave out counts as 0. |
-| `recorded/<sha256>.json` | Saved model answers for the demo photos, keyed by the photo's SHA-256. Replay mode uses these so the app works with no API key. |
+| `recorded/<sha256>.json` | Saved model answers, keyed by the photo's SHA-256. `npm run demo:record` writes them for the demo photos in `public/demo/`, and `--record` below writes them for eval photos. Replay mode uses them so the photo count works with no API key. |
 | `results.json` | Written by each run: per-photo counts, errors and the summary. |
 
 ## Shooting the photos
@@ -22,7 +22,7 @@ Use the five menu items from the sample club (water bottles, sports drinks, chip
 - Lay everything flat on one table. Hold the phone straight above it so the whole table is in frame, with a little margin.
 - Turn labels away from the camera or cover brand marks, so the photos can be shown publicly.
 - Shoot a few closing-style photos too: fewer items, some knocked over, an empty patch of table.
-- Keep the files as the phone saves them, or export at 1600 px on the long edge. For photos used in the live demo, use JPEG at 1600 px or less and under 2.5 MB: the app uploads those unchanged, so their SHA-256 matches the recording and replay mode finds them.
+- Keep the files as the phone saves them, or export at 1600 px on the long edge. The two photos behind the app's "Use the demo photo" option live in `public/demo/` instead; see `public/demo/README.md`.
 
 ## Labelling
 

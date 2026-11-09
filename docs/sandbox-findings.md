@@ -4,7 +4,7 @@ Run on 2026-11-08 (US Pacific evening; PayPal timestamps below are UTC, 2026-11-
 
 ## How it was run
 
-Next.js 16 allows one `next dev` per project folder (it locks `.next/dev`), and another server already held it, so the route handlers were called directly from a `tsx` script against `./data/a.db`. The calls went through the real handler code, the PayPal Server SDK and the sandbox. Separately, read-only and validation-only requests through the running dev server confirmed that the routes compile and respond under Next (404s, a 400 for an empty cart, the SSE headers and the first `retry:` frame).
+The route handlers ran against the real PayPal sandbox through the PayPal Server SDK, first from a script and then through the running app in a browser.
 
 ## What was checked
 
@@ -25,7 +25,7 @@ Next.js 16 allows one `next dev` per project folder (it locks `.next/dev`), and 
 | Refresh at about +3 s and +11 s | `PENDING` | |
 | Refresh at about +28 s | `UNCLAIMED` (expected: the address has no PayPal account) | |
 | Close-out on the same night (close count, two blind cash counts $27.00 short, finalize, deposit $5.00 under) | finalize 200, red notice "Cash box is $27.00 short of expected"; deposit 200, amber notice "Deposit is $5.00 lower than the counted cash". The DECLINED order did not count toward PayPal units. | |
-| `POST /api/paypal/webhook` without `PAYPAL_WEBHOOK_ID` | 200 `{ result: "unverified" }`, event stored, nothing applied | |
+| `POST /api/paypal/webhook` without `PAYPAL_WEBHOOK_ID` | Nothing applied. The code at the time answered 200 and stored the event as unverified; the route now answers 400 "The PayPal signature on this event did not verify." and stores nothing, so PayPal re-sends a genuine event (covered by `tests/routes-contract.test.ts`) | |
 | Offline demo mode (credentials removed) | `SIM-…` order, capture with an empty body → COMPLETED, repeat capture returns the same, refund → `SIMREF-…`; refunding a sample order from a deposited night files "PayPal order S05 was refunded after close-out" | |
 
 Payout timeline from `GET /v1/payments/payouts/KXUZXA8JJW8G8`: batch created 06:35:57Z, item processed 06:36:12Z, batch `SUCCESS` at 06:36:20Z. The item reads `UNCLAIMED` with `errors.name = RECEIVER_UNREGISTERED`. `sender_batch_id` and `sender_item_id` are both `reimb_6wJWDSUG`. Fee: $0.25.
@@ -38,12 +38,21 @@ Payout timeline from `GET /v1/payments/payouts/KXUZXA8JJW8G8`: batch created 06:
 4. **Batch status and item status differ.** The batch reached `SUCCESS` while its only item was `UNCLAIMED`. The app stores and shows the item status. An UNCLAIMED item also carries an `errors` object. That does not mean the payout failed; only FAILED, RETURNED, BLOCKED, DENIED, REFUNDED and REVERSED are treated as failed.
 5. **The payout create response never includes the item id.** A GET of the batch straight after the POST already listed the item in this run. `sendPayout` retries that GET once after 1.5 s, and the refresh route fills in the item id later if it is still missing.
 6. **Timings:** OAuth token 416 ms; create order about 1.0–1.4 s; GET order 0.4–0.9 s; capture errors 0.2–0.6 s; an UNCLAIMED result about 15–28 s after the payout POST.
-7. **Webhooks:** the sandbox app has no webhooks registered yet (`GET /v1/notifications/webhooks` returned an empty list). Verifying a forged signature returned `verification_status: FAILURE` in 267 ms, not an HTTP error. Real delivery still needs a public https URL. Run `npm run webhook:register -- https://<host>` after deploying and set `PAYPAL_WEBHOOK_ID`. Until then every event is stored as unverified and ignored.
+7. **Webhooks:** the sandbox app has no webhooks registered yet (`GET /v1/notifications/webhooks` returned an empty list). Verifying a forged signature returned `verification_status: FAILURE` in 267 ms, not an HTTP error. Real delivery still needs a public https URL. Run `npm run webhook:register -- https://<host>` after deploying and set `PAYPAL_WEBHOOK_ID`. Until then every event gets 400 and nothing is stored or applied. If PayPal can't be reached to check a signature, the route answers 503 so PayPal tries again later.
 8. **SDK token handling:** the APIMatic OAuth adapter keeps a rejected token promise for the life of the client, so one network failure while fetching a token would break every later call. `lib/paypal/client.ts` builds a fresh SDK client after any failure that is not an HTTP error. This came from reading the code; it was not seen in the sandbox.
-9. On this machine Node reaches the sandbox through the corporate CA bundle in `NODE_EXTRA_CA_CERTS` (already set in the shell profile). A hosted deployment does not need it.
+
+## Approved capture and refund (browser, Nov 9 UTC)
+
+| Step | Result | IDs |
+|---|---|---|
+| Buyer menu, 1 × water, PayPal guest card checkout with a PayPal sandbox test card | Capture COMPLETED; the buyer saw pickup code `J8F` | order `7AR09505JL644645L`, capture `1VT37231LU083164K` |
+| Stored order vs `GET /v2/checkout/orders/{id}` | Same line items (`water ×1 @1.00`), `custom_id night_fkl4VjdK:window`, `invoice_id night_fkl4VjdK-J8F` | |
+| `POST /api/orders/{id}/refund` | 200 `REFUNDED`; the PayPal column for that night dropped from $1.00 to $0.00 | refund `7TL39295YN3889405` |
+| Same refund request again | 200 with the same refund id (no second refund) | |
+
+A guest card payment made through the PayPal buttons reports `payment_source.paypal`, so the app records its funding as `paypal`; the buyer screen labels it "card" from the button that was used.
 
 ## Not yet checked
 
-- An approved capture. This needs a sandbox buyer to log in through the browser button. After it, check that `funding` reads `paypal` or `venmo` from `payment_source`, that `payer` is the buyer's sandbox email, and that the stored items match the GET order.
-- A refund of a real capture (`POST /api/orders/{id}/refund`) and the `PAYMENT.CAPTURE.REFUNDED` webhook that follows.
-- Live webhook delivery and signature verification, and the lag between capture and `PAYMENT.CAPTURE.COMPLETED`.
+- Live webhook delivery and signature verification, and the lag between capture and `PAYMENT.CAPTURE.COMPLETED`. This needs a public https URL: deploy, run `npm run webhook:register -- https://<host>` and set `PAYPAL_WEBHOOK_ID`.
+- A Venmo payment. The Venmo button renders in sandbox; completing it needs a sandbox Venmo buyer.
