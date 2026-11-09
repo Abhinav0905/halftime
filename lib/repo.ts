@@ -326,6 +326,17 @@ export function insertWebhookEvent(e: { id: string; type: string; resourceId: st
   return Number(res.changes) > 0;
 }
 
+/** A copy stored unverified can be applied once a later delivery of it verifies. True if it was promoted. */
+export function promoteWebhookEvent(id: string, raw: string): boolean {
+  const res = db().prepare("UPDATE webhook_event SET verified = 1, raw = ? WHERE id = ? AND verified = 0").run(raw, id);
+  return Number(res.changes) > 0;
+}
+
+/** Forget an event whose handling failed, so PayPal's retry is processed instead of skipped as a duplicate. */
+export function deleteWebhookEvent(id: string): void {
+  db().prepare("DELETE FROM webhook_event WHERE id = ?").run(id);
+}
+
 export function audit(nightId: string | null, actor: string | null, action: string, detail?: unknown): void {
   db().prepare("INSERT INTO audit (night_id, actor, action, detail, at) VALUES (?, ?, ?, ?, ?)")
     .run(nightId, actor, action, detail === undefined ? null : JSON.stringify(detail), nowIso());

@@ -23,7 +23,7 @@ export function visionConfig(): { provider: VisionProvider; apiKey: string; mode
   let provider: VisionProvider = apiKey ? "gemini" : "replay";
   if (requested === "replay" || requested === "manual") provider = requested;
   if (requested === "gemini" && !apiKey) provider = "replay";
-  return { provider, apiKey, model: process.env.GEMINI_MODEL || "gemini-2.5-flash" };
+  return { provider, apiKey, model: process.env.GEMINI_MODEL || "gemini-3.5-flash" };
 }
 
 export function dbPath(): string {
