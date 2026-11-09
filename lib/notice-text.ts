@@ -98,3 +98,15 @@ export function partialRefundNotice(night: Night, order: OrderRow, refundCents: 
       `Please note the partial refund on the count sheet.`,
   };
 }
+
+/** A PayPal payment that completed after the stand stopped selling (for example a pending capture that cleared later). */
+export function lateCaptureNotice(night: Night, order: OrderRow): NoticeDraft {
+  return {
+    level: "amber",
+    title: `PayPal order ${order.code} completed after selling ended`,
+    body:
+      `Order ${order.code} (${formatCents(order.totalCents)}) from ${gameName(night)} was confirmed by PayPal after the stand stopped taking orders. ` +
+      `Its items now count as PayPal sales instead of cash, so the expected cash for that night went down by up to ${formatCents(order.totalCents)}. ` +
+      `Please check whether these items were handed over before the closing count.`,
+  };
+}
