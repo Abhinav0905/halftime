@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #13203a;
+  --color-ink-soft: #3d4a63;
+  --color-muted: #6b7690;
+  --color-line: #dfe3ea;
+  --color-paper: #f6f7f9;
+  --color-card: #ffffff;
+  --color-brand: #1d3a6e;
+  --color-brand-soft: #e8eef9;
+  --color-gold: #f2b705;
+  --color-gold-soft: #fff6d6;
+  --color-ok: #15803d;
+  --color-ok-soft: #e7f6ec;
+  --color-warn: #b45309;
+  --color-warn-soft: #fff3e0;
+  --color-bad: #b91c1c;
+  --color-bad-soft: #fdecec;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keep focus visible for keyboard users everywhere. */
+:focus-visible {
+  outline: 3px solid var(--color-gold);
+  outline-offset: 2px;
+}
